@@ -1,0 +1,17 @@
+allowed_roots:
+  - ../tests/fixtures
+
+applications:
+  - id: example-service
+    name: Phase 0 systemd service
+    runtime:
+      type: systemd-user
+      unit: machinedeck-phase0.service
+
+  - id: compose-fixture
+    name: Phase 0 Compose fixture
+    runtime:
+      type: docker-compose
+      project_directory: ../tests/fixtures/compose
+      compose_file: compose.yaml
+

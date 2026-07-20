@@ -1,0 +1,9 @@
+[Unit]
+Description=MachineDeck Phase 0 validation service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -u -c "import time; print('MachineDeck Phase 0 service ready', flush=True); time.sleep(3600)"
+Restart=no
+KillMode=control-group
+

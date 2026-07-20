@@ -1,0 +1,8 @@
+services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "127.0.0.1::80"
+    labels:
+      io.machinedeck.fixture: phase0
+

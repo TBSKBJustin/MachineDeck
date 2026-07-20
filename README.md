@@ -2,6 +2,27 @@
 
 > **A local-first control plane for processes, containers, jobs, and GPUs.**
 
+## Development Status
+
+**Phase 0 — Technical Validation: Complete**
+
+Validated capabilities include:
+
+- CPU, RAM, disk, listening-port, and NVIDIA GPU metrics;
+- host-side PyNVML access to an NVIDIA GeForce RTX 3090 with 24 GiB VRAM;
+- allowlisted user-level systemd lifecycle operations and journal access;
+- Docker Compose lifecycle and published-port discovery;
+- live WebSocket metric updates;
+- a trusted application registry with systemd-user and Compose adapters;
+- rejection of unregistered applications, unsafe unit names, path traversal,
+  arbitrary commands, and lifecycle request arguments;
+- graceful degradation when Docker, NVML, or systemd is unavailable.
+
+Phase 0 uses user-level systemd without sudo or root privileges. See
+[`docs/phase-0.md`](docs/phase-0.md) for the validation record and
+[`docs/security-milestone.md`](docs/security-milestone.md) for the future
+system-wide service design.
+
 MachineDeck is a self-hosted web application for managing workloads on an Ubuntu machine from a single dashboard.
 
 It brings Python virtual environments, systemd services, Docker Compose stacks, scheduled jobs, ports, logs, and system resources into one unified interface. MachineDeck is especially useful for local AI workstations and home lab servers where multiple applications compete for CPU, memory, GPU, VRAM, and network ports.
@@ -624,15 +645,15 @@ machinedeck/
 
 ### Phase 0 — Technical Validation
 
-- [ ] Read CPU, RAM, disk, and network metrics
-- [ ] Read NVIDIA GPU and VRAM metrics
-- [ ] Start and stop a test systemd service
-- [ ] Start and stop a Docker Compose stack
-- [ ] Stream journal logs
-- [ ] Stream Docker logs
-- [ ] Detect listening ports
-- [ ] Push metrics through WebSocket
-- [ ] Validate the Ubuntu permission model
+- [x] Read CPU, RAM, disk, and network metrics
+- [x] Read NVIDIA GPU and VRAM metrics
+- [x] Start and stop a test systemd service
+- [x] Start and stop a Docker Compose stack
+- [x] Stream journal logs
+- [x] Stream Docker logs
+- [x] Detect listening ports
+- [x] Push metrics through WebSocket
+- [x] Validate the Ubuntu permission model
 
 ### Phase 1 — MVP
 
