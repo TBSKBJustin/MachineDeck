@@ -1,0 +1,81 @@
+# Environment variables and local secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.hypothesis/
+
+# Python packaging and build output
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Test and coverage output
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# Node.js dependencies and caches
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/
+*.tsbuildinfo
+
+# Frontend build output
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+
+# Local databases and runtime data
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+data/
+runtime/
+
+# Logs and process files
+*.log
+logs/
+*.pid
+*.pid.lock
+
+# IDE and editor settings
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Operating system metadata
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
