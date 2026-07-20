@@ -6,6 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 from sqlalchemy import create_engine, func, select
+from sqlalchemy import event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -22,6 +23,12 @@ def session_factory() -> Generator[sessionmaker[Session], None, None]:
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(connection: object, _: object) -> None:
+        cursor = connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 

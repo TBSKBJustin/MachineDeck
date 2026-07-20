@@ -661,16 +661,17 @@ machinedeck/
 
 - [ ] Single administrator account
 - [x] Application registry
-- [ ] Process applications
+- [x] Process applications
 - [x] Docker Compose applications
 - [x] Start, stop, and restart
 - [x] Application state model
-- [ ] Real-time logs
+- [x] Real-time logs
 - [ ] Manual port configuration
 - [ ] Open Web UI action
 - [ ] CPU, RAM, disk, GPU, and VRAM dashboard
 - [x] SQLite persistence
-- [ ] Audit log
+- [x] Audit event persistence
+- [ ] Audit log API and UI
 - [x] Configuration validation
 - [ ] systemd installation
 

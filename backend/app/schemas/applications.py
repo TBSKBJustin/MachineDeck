@@ -111,6 +111,11 @@ class ApplicationManifest(BaseModel):
         invalid = [name for name in value if not ENVIRONMENT_NAME_PATTERN.fullmatch(name)]
         if invalid:
             raise ValueError(f"invalid environment variable names: {', '.join(invalid)}")
+        unsafe = [name for name, item in value.items() if any(char in item for char in ("\n", "\r", "\x00"))]
+        if unsafe:
+            raise ValueError(
+                f"environment values cannot contain newlines or null bytes: {', '.join(unsafe)}"
+            )
         return value
 
     @field_validator("tags")

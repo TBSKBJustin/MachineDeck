@@ -20,6 +20,26 @@ class ApplicationNotFoundError(ValueError):
     pass
 
 
+class ApplicationRunningError(ValueError):
+    pass
+
+
+ACTIVE_STATUSES = {"CHECKING", "STARTING", "RUNNING", "UNHEALTHY", "STOPPING"}
+
+
+def _reject_active_application(session: Session, application_id: str) -> None:
+    latest_state = session.scalar(
+        select(ApplicationInstanceRecord)
+        .where(ApplicationInstanceRecord.application_id == application_id)
+        .order_by(ApplicationInstanceRecord.created_at.desc())
+        .limit(1)
+    )
+    if latest_state is not None and latest_state.status in ACTIVE_STATUSES:
+        raise ApplicationRunningError(
+            f"Application must be stopped before its configuration can be changed: {application_id}"
+        )
+
+
 def _serialize_manifest(manifest: ApplicationManifest) -> str:
     return yaml.safe_dump(manifest.model_dump(mode="json"), sort_keys=False)
 
@@ -94,6 +114,14 @@ def create_application(session: Session, manifest: ApplicationManifest) -> Appli
         enabled=manifest.enabled,
     )
     session.add(record)
+    try:
+        # The state row has a real foreign key but intentionally no ORM relationship;
+        # flush the registry row explicitly so ordering is deterministic with SQLite
+        # foreign-key enforcement enabled.
+        session.flush()
+    except IntegrityError as exc:
+        session.rollback()
+        raise ApplicationExistsError(f"Application already exists: {manifest.id}") from exc
     session.add(
         ApplicationInstanceRecord(
             id=str(uuid4()),
@@ -103,11 +131,7 @@ def create_application(session: Session, manifest: ApplicationManifest) -> Appli
         )
     )
     _audit(session, "application.create", manifest.id, details={"runtime_type": manifest.runtime.type})
-    try:
-        session.commit()
-    except IntegrityError as exc:
-        session.rollback()
-        raise ApplicationExistsError(f"Application already exists: {manifest.id}") from exc
+    session.commit()
     session.refresh(record)
     return _response(record, session)
 
@@ -120,6 +144,7 @@ def update_application(
     record = session.get(ApplicationRecord, application_id)
     if record is None:
         raise ApplicationNotFoundError(f"Application not found: {application_id}")
+    _reject_active_application(session, application_id)
     record.name = manifest.name
     record.description = manifest.description
     record.runtime_type = manifest.runtime.type
@@ -135,6 +160,7 @@ def delete_application(session: Session, application_id: str) -> None:
     record = session.get(ApplicationRecord, application_id)
     if record is None:
         raise ApplicationNotFoundError(f"Application not found: {application_id}")
+    _reject_active_application(session, application_id)
     session.delete(record)
     _audit(session, "application.delete", application_id)
     session.commit()

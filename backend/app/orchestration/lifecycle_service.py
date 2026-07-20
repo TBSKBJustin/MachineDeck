@@ -278,7 +278,11 @@ class LifecycleService:
             runtime_state = await adapter.status()
             state_response = self._apply_runtime_state(state, runtime_state)
             expected = (
-                {ApplicationStatus.RUNNING, ApplicationStatus.UNHEALTHY}
+                {
+                    ApplicationStatus.STARTING,
+                    ApplicationStatus.RUNNING,
+                    ApplicationStatus.UNHEALTHY,
+                }
                 if action in {"start", "restart"}
                 else {ApplicationStatus.STOPPED}
             )

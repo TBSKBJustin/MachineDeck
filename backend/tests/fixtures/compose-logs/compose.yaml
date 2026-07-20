@@ -1,0 +1,18 @@
+services:
+  api:
+    image: nginx:alpine
+    command:
+      - /bin/sh
+      - -c
+      - 'i=0; while true; do echo "api log $${i}"; i=$$((i+1)); sleep 1; done'
+    labels:
+      io.machinedeck.fixture: phase1-logs
+
+  worker:
+    image: nginx:alpine
+    command:
+      - /bin/sh
+      - -c
+      - 'i=0; while true; do echo "worker log $${i}"; i=$$((i+1)); sleep 1; done'
+    labels:
+      io.machinedeck.fixture: phase1-logs

@@ -51,3 +51,10 @@ class LogResponse(BaseModel):
     application_id: str
     source: str
     lines: list[str] = Field(default_factory=list)
+
+
+class UnitConsistencyResponse(BaseModel):
+    application_id: str
+    unit_name: str | None
+    status: str
+    message: str = ""

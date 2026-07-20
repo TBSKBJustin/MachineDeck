@@ -8,6 +8,7 @@ from typing import Protocol
 
 from app.schemas.applications import ApplicationManifest, ComposeRuntime, ProcessRuntime
 from app.schemas.lifecycle import ApplicationStatus
+from app.systemd.user_units import UnitError, UserUnitManager
 
 
 @dataclass(frozen=True)
@@ -63,22 +64,49 @@ async def run_command(
 
 
 class UserSystemdAdapter:
-    def __init__(self, application_id: str, runtime: ProcessRuntime) -> None:
-        self.application_id = application_id
-        self.runtime = runtime
-        self.unit = f"machinedeck-{application_id}.service"
+    def __init__(
+        self, manifest: ApplicationManifest, unit_manager: UserUnitManager | None = None
+    ) -> None:
+        if not isinstance(manifest.runtime, ProcessRuntime):
+            raise ValueError("UserSystemdAdapter requires a process manifest")
+        self.manifest = manifest
+        self.application_id = manifest.id
+        self.runtime = manifest.runtime
+        self.unit = f"machinedeck-{manifest.id}.service"
+        self.unit_manager = unit_manager or UserUnitManager()
 
     async def _action(self, action: str) -> AdapterResult:
         return await run_command(["systemctl", "--user", action, self.unit])
 
     async def start(self) -> AdapterResult:
-        return await self._action("start")
+        return await self._install_and_action("start")
 
     async def stop(self) -> AdapterResult:
         return await self._action("stop")
 
     async def restart(self) -> AdapterResult:
-        return await self._action("restart")
+        return await self._install_and_action("restart")
+
+    async def _install_and_action(self, action: str) -> AdapterResult:
+        try:
+            receipt = await self.unit_manager.install(self.manifest, run_command)
+        except UnitError as exc:
+            return AdapterResult(False, str(exc), error_code="UNIT_INSTALL_FAILED")
+        result = await self._action(action)
+        if result.succeeded:
+            confirmed = await self.status()
+            if confirmed.status in {ApplicationStatus.RUNNING, ApplicationStatus.STARTING}:
+                return result
+            result = AdapterResult(
+                False,
+                confirmed.error_message or f"Unit entered {confirmed.status.value} after {action}",
+                result.exit_code,
+                "UNIT_START_FAILED",
+            )
+        await receipt.rollback(run_command)
+        if action == "restart" and receipt.changed and receipt.previous_content is not None:
+            await self._action("restart")
+        return result
 
     async def status(self) -> RuntimeState:
         result = await run_command(
@@ -171,7 +199,14 @@ class DockerComposeAdapter:
                 )
         states = {str(container.get("State", "")).lower() for container in containers}
         health = {str(container.get("Health", "")).lower() for container in containers}
-        if "unhealthy" in health:
+        failed = any(
+            str(container.get("State", "")).lower() in {"dead", "failed"}
+            or int(container.get("ExitCode") or 0) != 0
+            for container in containers
+        )
+        if failed:
+            status = ApplicationStatus.FAILED
+        elif "unhealthy" in health:
             status = ApplicationStatus.UNHEALTHY
         elif states and states <= {"running"}:
             status = ApplicationStatus.RUNNING
@@ -190,7 +225,7 @@ class DockerComposeAdapter:
 
 def adapter_for(manifest: ApplicationManifest) -> RuntimeAdapter:
     if isinstance(manifest.runtime, ProcessRuntime):
-        return UserSystemdAdapter(manifest.id, manifest.runtime)
+        return UserSystemdAdapter(manifest)
     if isinstance(manifest.runtime, ComposeRuntime):
         return DockerComposeAdapter(manifest.id, manifest.runtime)
     raise ValueError(f"Unsupported runtime: {manifest.runtime.type}")

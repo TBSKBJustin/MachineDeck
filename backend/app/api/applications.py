@@ -6,16 +6,26 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from sqlalchemy.orm import Session
 
 from app.database.session import get_session
-from app.orchestration.lifecycle_service import LifecycleError, LifecycleService
+from app.orchestration.lifecycle_service import LifecycleError, LifecycleService, locks
 from app.schemas.applications import ApplicationManifest, ApplicationResponse, ValidationResponse
 from app.schemas.applications import validate_manifest_paths
-from app.schemas.lifecycle import ApplicationStateResponse, LifecycleActionResponse, LogResponse
-from app.services.applications import ApplicationExistsError, ApplicationNotFoundError
+from app.schemas.lifecycle import (
+    ApplicationStateResponse,
+    LifecycleActionResponse,
+    LogResponse,
+    UnitConsistencyResponse,
+)
+from app.services.applications import (
+    ApplicationExistsError,
+    ApplicationNotFoundError,
+    ApplicationRunningError,
+)
 from app.services.applications import create_application as create_application_record
 from app.services.applications import delete_application as delete_application_record
 from app.services.applications import get_application as get_application_record
 from app.services.applications import list_applications as list_application_records
 from app.services.applications import update_application as update_application_record
+from app.systemd.consistency import check_application_unit
 
 
 router = APIRouter(prefix="/api/v1/applications", tags=["applications"])
@@ -85,9 +95,12 @@ async def update_application(
 ) -> ApplicationResponse:
     _validated(manifest)
     try:
-        return update_application_record(session, application_id, manifest)
+        async with locks.get(application_id):
+            return update_application_record(session, application_id, manifest)
     except ApplicationNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ApplicationRunningError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -95,9 +108,12 @@ async def update_application(
 @router.delete("/{application_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_application(application_id: str, session: DatabaseSession) -> Response:
     try:
-        delete_application_record(session, application_id)
+        async with locks.get(application_id):
+            delete_application_record(session, application_id)
     except ApplicationNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ApplicationRunningError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -163,3 +179,14 @@ async def application_logs(
         return await LifecycleService(session).logs(application_id, lines)
     except LifecycleError as exc:
         raise _lifecycle_error(exc) from exc
+
+
+@router.get("/{application_id}/unit-consistency", response_model=UnitConsistencyResponse)
+async def application_unit_consistency(
+    application_id: str, session: DatabaseSession
+) -> UnitConsistencyResponse:
+    try:
+        async with locks.get(application_id):
+            return check_application_unit(session, application_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import asyncio
 
 import pytest
 from sqlalchemy import create_engine, func, select
@@ -13,7 +14,12 @@ from app.database.models import AuditEventRecord, ExecutionRecord
 from app.orchestration.lifecycle_service import ApplicationLockRegistry, LifecycleService
 from app.schemas.applications import ApplicationManifest
 from app.schemas.lifecycle import ApplicationStatus
-from app.services.applications import create_application
+from app.services.applications import (
+    ApplicationRunningError,
+    create_application,
+    delete_application,
+    update_application,
+)
 
 
 class FakeAdapter:
@@ -119,3 +125,46 @@ async def test_one_application_failure_does_not_change_another(session: Session)
     assert failed.status == ApplicationStatus.FAILED
     assert healthy.succeeded
     assert healthy.status == ApplicationStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_concurrent_start_serializes_delete_and_preserves_running_unit(session: Session) -> None:
+    saved_manifest = manifest("locked-app")
+    create_application(session, saved_manifest)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowAdapter(FakeAdapter):
+        async def start(self) -> AdapterResult:
+            entered.set()
+            await release.wait()
+            return await super().start()
+
+    lock_registry = ApplicationLockRegistry()
+    lifecycle = LifecycleService(session, lambda _: SlowAdapter(), lock_registry)
+    start_task = asyncio.create_task(lifecycle.action("locked-app", "start"))
+    await entered.wait()
+
+    async def attempt_delete() -> None:
+        async with lock_registry.get("locked-app"):
+            delete_application(session, "locked-app")
+
+    delete_task = asyncio.create_task(attempt_delete())
+    await asyncio.sleep(0)
+    assert not delete_task.done()
+    release.set()
+    assert (await start_task).succeeded
+    with pytest.raises(ApplicationRunningError):
+        await delete_task
+
+
+@pytest.mark.asyncio
+async def test_running_application_configuration_cannot_be_updated(session: Session) -> None:
+    original = manifest("immutable-running-app")
+    create_application(session, original)
+    adapter = FakeAdapter()
+    service = LifecycleService(session, lambda _: adapter, ApplicationLockRegistry())
+    assert (await service.action(original.id, "start")).succeeded
+    changed = original.model_copy(update={"name": "Changed while running"})
+    with pytest.raises(ApplicationRunningError):
+        update_application(session, original.id, changed)

@@ -23,6 +23,12 @@ class Settings:
     allowed_roots: tuple[Path, ...] = _allowed_roots()
     bind_host: str = os.getenv("MACHINEDECK_BIND_HOST", "127.0.0.1")
     bind_port: int = int(os.getenv("MACHINEDECK_BIND_PORT", "8080"))
+    user_unit_dir: Path = Path(
+        os.getenv(
+            "MACHINEDECK_USER_UNIT_DIR",
+            str(Path.home() / ".config" / "systemd" / "user"),
+        )
+    ).expanduser()
 
 
 settings = Settings()
