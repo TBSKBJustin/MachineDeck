@@ -3,16 +3,18 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "machinedeck-phase0"
+name = "machinedeck"
 version = "0.1.0"
-description = "MachineDeck Phase 0 host capability validation"
+description = "MachineDeck local application and AI workload control plane"
 requires-python = ">=3.10"
 dependencies = [
+  "alembic>=1.13,<2",
   "docker>=7.0,<8",
   "fastapi>=0.115,<1",
   "nvidia-ml-py>=12.535",
   "psutil>=5.9,<8",
   "PyYAML>=6.0,<7",
+  "SQLAlchemy>=2.0,<3",
   "uvicorn[standard]>=0.30,<1",
 ]
 
@@ -25,6 +27,7 @@ test = [
 
 [project.scripts]
 machinedeck-phase0 = "app.phase0.cli:main"
+machinedeck = "app.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

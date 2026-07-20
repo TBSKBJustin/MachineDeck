@@ -6,6 +6,8 @@
 
 **Phase 0 — Technical Validation: Complete**
 
+**Phase 1 — MVP: In progress**
+
 Validated capabilities include:
 
 - CPU, RAM, disk, listening-port, and NVIDIA GPU metrics;
@@ -658,18 +660,18 @@ machinedeck/
 ### Phase 1 — MVP
 
 - [ ] Single administrator account
-- [ ] Application registry
+- [x] Application registry
 - [ ] Process applications
-- [ ] Docker Compose applications
-- [ ] Start, stop, and restart
-- [ ] Application state model
+- [x] Docker Compose applications
+- [x] Start, stop, and restart
+- [x] Application state model
 - [ ] Real-time logs
 - [ ] Manual port configuration
 - [ ] Open Web UI action
 - [ ] CPU, RAM, disk, GPU, and VRAM dashboard
-- [ ] SQLite persistence
+- [x] SQLite persistence
 - [ ] Audit log
-- [ ] Configuration validation
+- [x] Configuration validation
 - [ ] systemd installation
 
 ### Phase 2 — Automation and Reliability
