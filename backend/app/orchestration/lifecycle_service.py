@@ -25,8 +25,10 @@ from app.schemas.lifecycle import (
     LifecycleActionResponse,
     LogResponse,
 )
+from app.orchestration.port_discovery import PortDiscoveryError
 
 from .state_machine import InvalidStateTransitionError, require_transition
+from .ports import PortService
 
 
 def utc_now() -> datetime:
@@ -34,9 +36,10 @@ def utc_now() -> datetime:
 
 
 class LifecycleError(ValueError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, details: dict | None = None) -> None:
         super().__init__(message)
         self.code = code
+        self.details = details or {}
 
 
 AdapterFactory = Callable[[ApplicationManifest], RuntimeAdapter]
@@ -235,6 +238,36 @@ class LifecycleService:
                 raise LifecycleError("APP_NOT_RUNNING", f"Application is not running: {application_id}")
 
             execution = self._new_execution(application_id, action)
+
+            if action in {"start", "restart"}:
+                try:
+                    conflicts = await PortService(self.session).conflicts(manifest)
+                except PortDiscoveryError as exc:
+                    self._finish_execution(
+                        execution,
+                        False,
+                        error_code="PORT_DISCOVERY_UNAVAILABLE",
+                        error_message=str(exc),
+                    )
+                    raise LifecycleError(
+                        "PORT_DISCOVERY_UNAVAILABLE",
+                        "Cannot safely validate declared ports before startup",
+                    ) from exc
+                if conflicts:
+                    self._finish_execution(
+                        execution,
+                        False,
+                        error_code="PORT_CONFLICT",
+                        error_message="One or more declared ports are already in use",
+                    )
+                    raise LifecycleError(
+                        "PORT_CONFLICT",
+                        f"One or more declared ports are already in use for {application_id}",
+                        details={
+                            "conflicts": [conflict.model_dump(mode="json") for conflict in conflicts]
+                        },
+                    )
+
             adapter = self.adapter_factory(manifest)
             try:
                 if action == "start":

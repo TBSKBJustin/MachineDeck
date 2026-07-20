@@ -16,6 +16,10 @@ Validated capabilities include:
 - Docker Compose lifecycle and published-port discovery;
 - live WebSocket metric updates;
 - a trusted application registry with systemd-user and Compose adapters;
+- declared/observed port reconciliation, pre-start conflict checks, and safe
+  Open Web UI endpoint generation;
+- a single-administrator Argon2id login boundary with server-side sessions,
+  CSRF protection, login throttling, and pre-accept WebSocket authentication;
 - rejection of unregistered applications, unsafe unit names, path traversal,
   arbitrary commands, and lifecycle request arguments;
 - graceful degradation when Docker, NVML, or systemd is unavailable.
@@ -373,7 +377,11 @@ ports:
   - id: web
     name: Web UI
     protocol: http
-    host: 8188
+    host_port: 8188
+    bind_address: 0.0.0.0
+    path: /
+    primary: true
+    open_in_browser: true
     health_path: /
 
 resources:
@@ -431,11 +439,14 @@ compose:
   pull_before_start: false
 
 ports:
-  auto_discover: true
-  preferred:
-    - service: immich-server
-      container_port: 2283
-      protocol: http
+  - id: web
+    name: Web UI
+    protocol: http
+    host_port: 2283
+    bind_address: 0.0.0.0
+    path: /
+    primary: true
+    open_in_browser: true
 
 startup:
   timeout_seconds: 180
@@ -659,15 +670,16 @@ machinedeck/
 
 ### Phase 1 — MVP
 
-- [ ] Single administrator account
+- [x] Single administrator account
 - [x] Application registry
 - [x] Process applications
 - [x] Docker Compose applications
 - [x] Start, stop, and restart
 - [x] Application state model
 - [x] Real-time logs
-- [ ] Manual port configuration
-- [ ] Open Web UI action
+- [x] Manual port configuration
+- [x] Port discovery and conflict validation
+- [x] Open Web UI action
 - [ ] CPU, RAM, disk, GPU, and VRAM dashboard
 - [x] SQLite persistence
 - [x] Audit event persistence
@@ -677,7 +689,7 @@ machinedeck/
 
 ### Phase 2 — Automation and Reliability
 
-- [ ] Automatic port discovery
+- [x] Automatic port discovery
 - [ ] HTTP and TCP health checks
 - [ ] Scheduled actions
 - [ ] Execution history

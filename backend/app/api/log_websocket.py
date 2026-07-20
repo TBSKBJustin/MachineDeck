@@ -10,6 +10,7 @@ from app.database.session import SessionLocal
 from app.logging.adapters import LogSourceError
 from app.logging.models import LogEnvelope, LogEvent
 from app.logging.service import ApplicationLogError, ApplicationLogService, parse_service_filter
+from app.security.auth import authenticate_websocket, wait_for_websocket_session_end
 
 
 router = APIRouter()
@@ -100,10 +101,16 @@ def enqueue_bounded(
 
 @router.websocket("/ws/v1/applications/{application_id}/logs")
 async def application_logs(websocket: WebSocket, application_id: str) -> None:
+    auth_session_id = await authenticate_websocket(websocket)
+    if auth_session_id is None:
+        return
     await websocket.accept()
     log_connections.add(websocket)
     producer: asyncio.Task[None] | None = None
     disconnect: asyncio.Task[dict] | None = None
+    auth_expiration = asyncio.create_task(
+        wait_for_websocket_session_end(auth_session_id)
+    )
     try:
         history_limit, should_follow, since, requested_cursor, services = _parse_query(websocket)
         await _send(websocket, LogEnvelope(type="status", data={"state": "connected"}))
@@ -162,8 +169,16 @@ async def application_logs(websocket: WebSocket, application_id: str) -> None:
             while True:
                 queued = asyncio.create_task(queue.get())
                 done, _ = await asyncio.wait(
-                    {queued, disconnect}, return_when=asyncio.FIRST_COMPLETED
+                    {queued, disconnect, auth_expiration},
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
+                if auth_expiration in done:
+                    queued.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await queued
+                    with suppress(WebSocketDisconnect, RuntimeError):
+                        await websocket.close(code=4401, reason="Session expired or revoked")
+                    break
                 if disconnect in done:
                     queued.cancel()
                     with suppress(asyncio.CancelledError):
@@ -200,6 +215,10 @@ async def application_logs(websocket: WebSocket, application_id: str) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        if not auth_expiration.done():
+            auth_expiration.cancel()
+            with suppress(asyncio.CancelledError):
+                await auth_expiration
         if disconnect is not None and not disconnect.done():
             disconnect.cancel()
             with suppress(asyncio.CancelledError):

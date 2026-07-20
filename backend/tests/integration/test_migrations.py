@@ -19,4 +19,7 @@ def test_initial_migration_upgrades_empty_database(tmp_path: Path) -> None:
         "application_instances",
         "audit_events",
         "executions",
+        "administrators",
+        "auth_sessions",
+        "login_failures",
     } <= tables

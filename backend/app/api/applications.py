@@ -26,6 +26,8 @@ from app.services.applications import get_application as get_application_record
 from app.services.applications import list_applications as list_application_records
 from app.services.applications import update_application as update_application_record
 from app.systemd.consistency import check_application_unit
+from app.orchestration.ports import PortService, PortServiceError
+from app.schemas.ports import EndpointsResponse, PortsResponse
 
 
 router = APIRouter(prefix="/api/v1/applications", tags=["applications"])
@@ -46,7 +48,18 @@ def _lifecycle_error(exc: LifecycleError) -> HTTPException:
     status_code = (
         status.HTTP_404_NOT_FOUND if exc.code == "APP_NOT_FOUND" else status.HTTP_409_CONFLICT
     )
-    return HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)})
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": exc.code, "message": str(exc), "details": exc.details},
+    )
+
+
+def _port_error(exc: PortServiceError) -> HTTPException:
+    status_code = status.HTTP_404_NOT_FOUND if exc.code == "APP_NOT_FOUND" else status.HTTP_400_BAD_REQUEST
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": exc.code, "message": str(exc), "details": exc.details},
+    )
 
 
 async def _reject_lifecycle_body(request: Request) -> None:
@@ -190,3 +203,40 @@ async def application_unit_consistency(
             return check_application_unit(session, application_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.get("/{application_id}/ports", response_model=PortsResponse)
+async def application_ports(
+    application_id: str,
+    session: DatabaseSession,
+) -> PortsResponse:
+    try:
+        return await PortService(session).ports(application_id)
+    except PortServiceError as exc:
+        raise _port_error(exc) from exc
+
+
+@router.post("/{application_id}/ports/refresh", response_model=PortsResponse)
+async def refresh_application_ports(
+    application_id: str,
+    request: Request,
+    session: DatabaseSession,
+) -> PortsResponse:
+    await _reject_lifecycle_body(request)
+    try:
+        async with locks.get(application_id):
+            return await PortService(session).ports(application_id)
+    except PortServiceError as exc:
+        raise _port_error(exc) from exc
+
+
+@router.get("/{application_id}/endpoints", response_model=EndpointsResponse)
+async def application_endpoints(
+    application_id: str,
+    session: DatabaseSession,
+    scope: str = Query(default="local", pattern="^(local|lan)$"),
+) -> EndpointsResponse:
+    try:
+        return await PortService(session).endpoints(application_id, scope)
+    except PortServiceError as exc:
+        raise _port_error(exc) from exc

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import asyncio
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import create_engine, func, select
@@ -11,7 +12,13 @@ from sqlalchemy.pool import StaticPool
 from app.adapters.runtime import AdapterResult, RuntimeState
 from app.database.base import Base
 from app.database.models import AuditEventRecord, ExecutionRecord
-from app.orchestration.lifecycle_service import ApplicationLockRegistry, LifecycleService
+from app.orchestration.lifecycle_service import (
+    ApplicationLockRegistry,
+    LifecycleError,
+    LifecycleService,
+)
+from app.orchestration.port_discovery import PortDiscoveryError
+from app.schemas.ports import PortConflict
 from app.schemas.applications import ApplicationManifest
 from app.schemas.lifecycle import ApplicationStatus
 from app.services.applications import (
@@ -168,3 +175,81 @@ async def test_running_application_configuration_cannot_be_updated(session: Sess
     changed = original.model_copy(update={"name": "Changed while running"})
     with pytest.raises(ApplicationRunningError):
         update_application(session, original.id, changed)
+
+
+@pytest.mark.asyncio
+async def test_start_port_conflict_is_audited_and_rejected_before_adapter(session: Session) -> None:
+    saved = ApplicationManifest.model_validate(
+        {
+            **manifest("port-conflict-app").model_dump(mode="json"),
+            "ports": [
+                {
+                    "id": "web",
+                    "name": "Web",
+                    "protocol": "http",
+                    "host_port": 8188,
+                }
+            ],
+        }
+    )
+    create_application(session, saved)
+    adapter = FakeAdapter()
+    with patch(
+        "app.orchestration.lifecycle_service.PortService.conflicts",
+        AsyncMock(
+            return_value=[
+                PortConflict(
+                    protocol="tcp",
+                    bind_address="0.0.0.0",
+                    port=8188,
+                    pid=99,
+                    process_name="python",
+                )
+            ]
+        ),
+    ):
+        with pytest.raises(LifecycleError) as raised:
+            await LifecycleService(
+                session, lambda _: adapter, ApplicationLockRegistry()
+            ).action(saved.id, "start")
+    assert raised.value.code == "PORT_CONFLICT"
+    assert raised.value.details["conflicts"][0]["pid"] == 99
+    assert adapter.state.value == "STOPPED"
+    execution = session.scalar(
+        select(ExecutionRecord).where(ExecutionRecord.application_id == saved.id)
+    )
+    assert execution.status == "FAILED"
+    assert execution.error_code == "PORT_CONFLICT"
+    audit = session.scalar(
+        select(AuditEventRecord).where(
+            AuditEventRecord.target_id == saved.id,
+            AuditEventRecord.action == "application.start",
+        )
+    )
+    assert audit.result == "failure"
+
+
+@pytest.mark.asyncio
+async def test_start_fails_closed_when_listener_scan_is_unavailable(session: Session) -> None:
+    saved = ApplicationManifest.model_validate(
+        {
+            **manifest("port-scan-failure").model_dump(mode="json"),
+            "ports": [{"id": "web", "name": "Web", "host_port": 8188}],
+        }
+    )
+    create_application(session, saved)
+    adapter = FakeAdapter()
+    with patch(
+        "app.orchestration.lifecycle_service.PortService.conflicts",
+        AsyncMock(side_effect=PortDiscoveryError("permission denied")),
+    ):
+        with pytest.raises(LifecycleError) as raised:
+            await LifecycleService(
+                session, lambda _: adapter, ApplicationLockRegistry()
+            ).action(saved.id, "start")
+    assert raised.value.code == "PORT_DISCOVERY_UNAVAILABLE"
+    assert adapter.state == ApplicationStatus.STOPPED
+    execution = session.scalar(
+        select(ExecutionRecord).where(ExecutionRecord.application_id == saved.id)
+    )
+    assert execution.error_code == "PORT_DISCOVERY_UNAVAILABLE"

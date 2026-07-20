@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import re
+import ipaddress
+from urllib.parse import urlsplit
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.config import settings
 from app.schemas.lifecycle import ApplicationStatus
@@ -69,20 +71,51 @@ Runtime = Annotated[ProcessRuntime | ComposeRuntime, Field(discriminator="type")
 
 
 class PortDefinition(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]*$")
     name: str = Field(min_length=1, max_length=100)
     protocol: Literal["http", "https", "tcp", "udp"] = "http"
-    host: int = Field(ge=1, le=65535)
+    host_port: int = Field(
+        ge=1,
+        le=65535,
+        validation_alias=AliasChoices("host_port", "host"),
+    )
+    bind_address: str = "127.0.0.1"
+    path: str | None = None
+    primary: bool = False
+    open_in_browser: bool = False
     health_path: str | None = None
 
-    @field_validator("health_path")
+    @field_validator("bind_address")
+    @classmethod
+    def validate_bind_address(cls, value: str) -> str:
+        try:
+            return str(ipaddress.ip_address(value))
+        except ValueError as exc:
+            raise ValueError("bind_address must be a literal IPv4 or IPv6 address") from exc
+
+    @field_validator("path", "health_path")
     @classmethod
     def validate_health_path(cls, value: str | None) -> str | None:
         if value is not None and not value.startswith("/"):
-            raise ValueError("health_path must start with /")
+            raise ValueError("Web paths must start with /")
+        if value is not None:
+            parsed = urlsplit(value)
+            if parsed.scheme or parsed.netloc:
+                raise ValueError("Web paths cannot contain a scheme or hostname")
         return value
+
+    @model_validator(mode="after")
+    def protocol_specific_fields(self) -> "PortDefinition":
+        is_web = self.protocol in {"http", "https"}
+        if not is_web and any(
+            (self.path is not None, self.health_path is not None, self.primary, self.open_in_browser)
+        ):
+            raise ValueError("TCP and UDP ports cannot define Web paths or browser actions")
+        if is_web and self.path is None:
+            self.path = "/"
+        return self
 
 
 class ApplicationManifest(BaseModel):
@@ -128,11 +161,16 @@ class ApplicationManifest(BaseModel):
     @model_validator(mode="after")
     def unique_ports(self) -> "ApplicationManifest":
         ids = [port.id for port in self.ports]
-        hosts = [port.host for port in self.ports]
+        hosts = [port.host_port for port in self.ports]
         if len(ids) != len(set(ids)):
             raise ValueError("port ids must be unique")
         if len(hosts) != len(set(hosts)):
             raise ValueError("host ports must be unique within an application")
+        primary_web = [
+            port for port in self.ports if port.primary and port.protocol in {"http", "https"}
+        ]
+        if len(primary_web) > 1:
+            raise ValueError("only one primary Web endpoint is allowed")
         return self
 
 
@@ -165,6 +203,16 @@ def validate_manifest_paths(
 ) -> ValidationResponse:
     errors: list[ValidationIssue] = []
     warnings: list[ValidationIssue] = []
+    if not settings.allow_privileged_ports:
+        for index, port in enumerate(manifest.ports):
+            if port.host_port < 1024:
+                errors.append(
+                    ValidationIssue(
+                        field=f"ports[{index}].host_port",
+                        code="PRIVILEGED_PORT_NOT_ALLOWED",
+                        message="Ports below 1024 require an explicit host policy opt-in.",
+                    )
+                )
     working_dir = manifest.runtime.working_dir
     if not any(working_dir == root or working_dir.is_relative_to(root) for root in allowed_roots):
         errors.append(
