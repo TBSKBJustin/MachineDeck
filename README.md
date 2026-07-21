@@ -30,6 +30,8 @@ Validated capabilities include:
 
 Phase 0 uses user-level systemd without sudo or root privileges. See
 [`docs/phase-0.md`](docs/phase-0.md) for the validation record and
+[`docs/installation.md`](docs/installation.md) for the Phase 1 installation,
+upgrade, doctor, uninstall, rollback, and Tailscale workflow. See
 [`docs/security-milestone.md`](docs/security-milestone.md) for the future
 system-wide service design.
 
@@ -689,7 +691,7 @@ machinedeck/
 - [x] Audit event persistence
 - [x] Audit log API and UI
 - [x] Configuration validation
-- [ ] systemd installation
+- [ ] systemd installation (implementation complete; host acceptance pending)
 
 ### Phase 2 — Automation and Reliability
 

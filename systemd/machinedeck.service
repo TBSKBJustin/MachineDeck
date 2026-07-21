@@ -1,0 +1,27 @@
+[Unit]
+Description=MachineDeck Local Workload Control Plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/machinedeck/current/backend
+ExecStart=%h/.local/share/machinedeck/current/venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+TimeoutStopSec=30
+KillMode=control-group
+Environment=MACHINEDECK_CONFIG=%h/.config/machinedeck/config.toml
+Environment=MACHINEDECK_PROJECT_ROOT=%h/.local/share/machinedeck/current
+Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=default.target

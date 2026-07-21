@@ -68,6 +68,14 @@ control host workloads.
   redaction with bounded detail size at the API boundary;
 - responsive Audit Log table, filter controls, pagination, and a detail drawer
   that safely renders unknown and older event types.
+- source-based user-service install, upgrade, uninstall, and doctor commands with
+  per-release virtual environments and an atomic current-release pointer;
+- real TOML configuration with environment precedence and separated application,
+  state, backup, configuration, and user-unit directories;
+- unit verification, Alembic migration, SQLite backup, HTTP health validation,
+  and code/unit/database rollback on deployment failure;
+- non-destructive default uninstall, explicit purge and managed-unit deletion,
+  linger opt-in, machine-readable doctor results, and Tailscale HTTPS guidance.
 
 ## API available in this slice
 
@@ -221,7 +229,7 @@ snapshot in about 111 ms with CPU/RAM and all configured disks, one RTX 3090,
 temporary end-to-end server then served the frontend with CSP/frame protections,
 returned an authenticated REST snapshot, sent an immediate WebSocket snapshot,
 and closed that socket with `4401` after logout. Temporary database and server
-state were removed. The complete suite now contains 135 passing tests.
+state were removed. The complete suite now contains 142 passing tests.
 
 ### Audit log
 
@@ -301,5 +309,6 @@ project directory and can be replaced with a colon-separated
 
 ## Next slice
 
-1. Add the formal systemd installation, uninstall, upgrade, and doctor workflow.
-2. Prepare the Phase 1 release candidate.
+1. Run the complete install/upgrade/rollback/uninstall/reinstall host acceptance
+   using the real systemd user manager.
+2. Freeze the alpha directory layout and prepare the Phase 1 release candidate.
