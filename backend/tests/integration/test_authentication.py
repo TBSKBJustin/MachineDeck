@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import httpx
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -21,6 +22,7 @@ from app.database.models import (
 )
 from app.database.session import get_session
 from app.main import app
+from app.schemas.auth import Credentials
 
 
 PASSWORD = "correct horse battery staple"
@@ -144,6 +146,16 @@ async def test_csrf_is_required_and_logout_revokes_the_session(
     assert after_logout.status_code == 401
     with session_factory() as session:
         assert session.scalar(select(AuthSessionRecord)).revoked_at is not None
+        registry_event = session.scalar(
+            select(AuditEventRecord).where(
+                AuditEventRecord.action == "application.create"
+            )
+        )
+        assert registry_event.actor == "admin"
+        assert registry_event.details_json["request"] == {
+            "method": "POST",
+            "path": "/api/v1/applications",
+        }
         actions = session.scalars(
             select(AuditEventRecord.action).where(AuditEventRecord.action.like("auth.%"))
         ).all()
@@ -218,15 +230,33 @@ async def test_setup_rejects_remote_clients_and_untrusted_origins(
         )
     assert remote.status_code == 403
     assert remote.json()["detail"]["code"] == "LOCAL_SETUP_REQUIRED"
+    assert "127.0.0.1" in remote.json()["detail"]["message"]
     assert hostile.status_code == 403
     assert hostile.json()["detail"]["code"] == "ORIGIN_NOT_ALLOWED"
+
+
+@pytest.mark.asyncio
+async def test_remote_setup_reports_local_requirement_before_origin_configuration(
+    session_factory: sessionmaker[Session],
+) -> None:
+    transport = httpx.ASGITransport(app=app, client=("100.101.88.36", 56821))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://100.100.100.100:8080"
+    ) as client:
+        response = await client.post(
+            "/api/v1/auth/setup",
+            json=credentials(),
+            headers={"origin": "http://100.100.100.100:8080"},
+        )
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "LOCAL_SETUP_REQUIRED"
 
 
 @pytest.mark.asyncio
 async def test_auth_validation_does_not_echo_password(
     session_factory: sessionmaker[Session],
 ) -> None:
-    submitted = "too-short"
+    submitted = "7chars!"
     transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 12345))
     async with httpx.AsyncClient(
         transport=transport, base_url="https://127.0.0.1:8080"
@@ -238,3 +268,9 @@ async def test_auth_validation_does_not_echo_password(
         )
     assert response.status_code == 422
     assert submitted not in response.text
+
+
+def test_password_minimum_is_eight_characters() -> None:
+    assert Credentials(username="admin", password="12345678").password == "12345678"
+    with pytest.raises(ValidationError):
+        Credentials(username="admin", password="1234567")

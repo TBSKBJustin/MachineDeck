@@ -8,6 +8,7 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from argon2 import PasswordHasher, Type
@@ -64,10 +65,34 @@ def is_loopback(host: str | None) -> bool:
         return host.lower() == "localhost"
 
 
+def origin_is_trusted(origin: str | None) -> bool:
+    if origin is None:
+        return False
+    normalized = origin.rstrip("/")
+    if normalized in settings.trusted_origins:
+        return True
+    try:
+        parsed = urlsplit(origin)
+        # Accessing port also validates that it is numeric and in range.
+        _ = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname
+        and is_loopback(parsed.hostname)
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path in {"", "/"}
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
 def require_trusted_origin(origin: str | None, *, allow_missing: bool = True) -> None:
     if origin is None and allow_missing:
         return
-    if origin is None or origin.rstrip("/") not in settings.trusted_origins:
+    if not origin_is_trusted(origin):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"code": "ORIGIN_NOT_ALLOWED", "message": "Request origin is not trusted"},
@@ -261,7 +286,7 @@ async def require_http_auth(
 
 async def authenticate_websocket(websocket: WebSocket) -> str | None:
     origin = websocket.headers.get("origin")
-    if origin is None or origin.rstrip("/") not in settings.trusted_origins:
+    if not origin_is_trusted(origin):
         await websocket.close(code=4403, reason="Origin not allowed")
         return None
     try:

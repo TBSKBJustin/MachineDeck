@@ -5,17 +5,21 @@ from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
+from starlette.datastructures import QueryParams
 
+from app.api.dashboard import dashboard_websocket
 from app.api.log_websocket import application_logs
 from app.database.base import Base
 from app.database.models import AuthSessionRecord
-from app.main import system_metrics
 from app.security.auth import (
     authenticate_websocket,
     create_administrator,
     create_auth_session,
+    origin_is_trusted,
+    require_trusted_origin,
     utc_now,
     wait_for_websocket_session_end,
 )
@@ -30,6 +34,7 @@ class FakeWebSocket:
     ) -> None:
         self.headers = {"origin": origin} if origin else {}
         self.cookies = {"machinedeck_session": token} if token else {}
+        self.query_params = QueryParams("")
         self.accepted = False
         self.closed: tuple[int, str] | None = None
 
@@ -38,6 +43,16 @@ class FakeWebSocket:
 
     async def close(self, code: int, reason: str) -> None:
         self.closed = (code, reason)
+
+
+def test_loopback_origins_allow_any_local_port_but_not_lookalike_hosts() -> None:
+    assert origin_is_trusted("http://127.0.0.1:39427")
+    assert origin_is_trusted("https://localhost:8443")
+    assert origin_is_trusted("http://[::1]:9000")
+    assert not origin_is_trusted("http://localhost.attacker.example:8080")
+    assert not origin_is_trusted("javascript://localhost")
+    with pytest.raises(HTTPException):
+        require_trusted_origin("https://attacker.example")
 
 
 @pytest.mark.asyncio
@@ -101,7 +116,7 @@ async def test_log_and_metric_handlers_do_not_accept_before_authentication() -> 
         "app.api.log_websocket.authenticate_websocket", AsyncMock(return_value=None)
     ):
         await application_logs(log_socket, "private-application")
-    with patch("app.main.authenticate_websocket", AsyncMock(return_value=None)):
-        await system_metrics(metric_socket)
+    with patch("app.api.dashboard.authenticate_websocket", AsyncMock(return_value=None)):
+        await dashboard_websocket(metric_socket)
     assert not log_socket.accepted
     assert not metric_socket.accepted

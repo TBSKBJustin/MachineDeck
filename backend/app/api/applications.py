@@ -34,6 +34,22 @@ router = APIRouter(prefix="/api/v1/applications", tags=["applications"])
 DatabaseSession = Annotated[Session, Depends(get_session)]
 
 
+def _audit_actor(request: Request) -> str:
+    authenticated = getattr(request.state, "authenticated", None)
+    if authenticated is None:
+        return "phase1-api"
+    return authenticated.administrator.username
+
+
+def _lifecycle_service(session: Session, request: Request) -> LifecycleService:
+    return LifecycleService(
+        session,
+        actor=_audit_actor(request),
+        request_method=request.method,
+        request_path=request.url.path,
+    )
+
+
 def _validated(manifest: ApplicationManifest) -> ValidationResponse:
     result = validate_manifest_paths(manifest)
     if not result.valid:
@@ -80,11 +96,17 @@ async def list_applications(session: DatabaseSession) -> list[ApplicationRespons
 
 @router.post("", response_model=ApplicationResponse, status_code=status.HTTP_201_CREATED)
 async def create_application(
-    manifest: ApplicationManifest, session: DatabaseSession
+    manifest: ApplicationManifest, request: Request, session: DatabaseSession
 ) -> ApplicationResponse:
     _validated(manifest)
     try:
-        return create_application_record(session, manifest)
+        return create_application_record(
+            session,
+            manifest,
+            actor=_audit_actor(request),
+            request_method=request.method,
+            request_path=request.url.path,
+        )
     except ApplicationExistsError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
@@ -104,12 +126,22 @@ async def get_application(application_id: str, session: DatabaseSession) -> Appl
 
 @router.put("/{application_id}", response_model=ApplicationResponse)
 async def update_application(
-    application_id: str, manifest: ApplicationManifest, session: DatabaseSession
+    application_id: str,
+    manifest: ApplicationManifest,
+    request: Request,
+    session: DatabaseSession,
 ) -> ApplicationResponse:
     _validated(manifest)
     try:
         async with locks.get(application_id):
-            return update_application_record(session, application_id, manifest)
+            return update_application_record(
+                session,
+                application_id,
+                manifest,
+                actor=_audit_actor(request),
+                request_method=request.method,
+                request_path=request.url.path,
+            )
     except ApplicationNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ApplicationRunningError as exc:
@@ -119,10 +151,18 @@ async def update_application(
 
 
 @router.delete("/{application_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_application(application_id: str, session: DatabaseSession) -> Response:
+async def delete_application(
+    application_id: str, request: Request, session: DatabaseSession
+) -> Response:
     try:
         async with locks.get(application_id):
-            delete_application_record(session, application_id)
+            delete_application_record(
+                session,
+                application_id,
+                actor=_audit_actor(request),
+                request_method=request.method,
+                request_path=request.url.path,
+            )
     except ApplicationNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ApplicationRunningError as exc:
@@ -145,7 +185,7 @@ async def start_application(
 ) -> LifecycleActionResponse:
     await _reject_lifecycle_body(request)
     try:
-        return await LifecycleService(session).action(application_id, "start")
+        return await _lifecycle_service(session, request).action(application_id, "start")
     except LifecycleError as exc:
         raise _lifecycle_error(exc) from exc
 
@@ -156,7 +196,7 @@ async def stop_application(
 ) -> LifecycleActionResponse:
     await _reject_lifecycle_body(request)
     try:
-        return await LifecycleService(session).action(application_id, "stop")
+        return await _lifecycle_service(session, request).action(application_id, "stop")
     except LifecycleError as exc:
         raise _lifecycle_error(exc) from exc
 
@@ -167,7 +207,7 @@ async def restart_application(
 ) -> LifecycleActionResponse:
     await _reject_lifecycle_body(request)
     try:
-        return await LifecycleService(session).action(application_id, "restart")
+        return await _lifecycle_service(session, request).action(application_id, "restart")
     except LifecycleError as exc:
         raise _lifecycle_error(exc) from exc
 

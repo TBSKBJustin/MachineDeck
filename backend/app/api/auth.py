@@ -65,15 +65,18 @@ async def setup(
     response: Response,
     session: DatabaseSession,
 ) -> AuthSessionResponse:
-    require_trusted_origin(request.headers.get("origin"))
     if not is_loopback(request.client.host if request.client else None):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={
                 "code": "LOCAL_SETUP_REQUIRED",
-                "message": "Initial administrator setup is allowed only from localhost",
+                "message": (
+                    "Initial administrator setup is allowed only from this host. "
+                    "Open MachineDeck through 127.0.0.1 or localhost on the server."
+                ),
             },
         )
+    require_trusted_origin(request.headers.get("origin"))
     admin = create_administrator(session, credentials.username, credentials.password)
     saved, token, csrf_token = create_auth_session(session, admin)
     set_session_cookie(response, token, saved.expires_at)

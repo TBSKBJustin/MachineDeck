@@ -53,9 +53,21 @@ control host workloads.
 - CSRF tokens and trusted-Origin checks for state-changing requests;
 - persistent per-client login-failure throttling and authentication audit events;
 - authentication and Origin validation before either WebSocket is accepted.
-
-Audit event persistence is complete. Query APIs, filtering, pagination, and the
-Audit Log UI remain outstanding and are tracked separately in the roadmap.
+- one shared two-second Dashboard collection loop feeding REST and every client;
+- timestamped CPU, per-core, load, RAM, swap, configured-disk, uptime, GPU,
+  VRAM, sensor, GPU-process, and application-summary snapshots;
+- bounded latest-value subscriber queues so slow clients cannot block collection;
+- responsive first-run/login and Dashboard pages with LIVE, STALE, and OFFLINE
+  semantics and per-collector degraded-state presentation.
+- authenticated Audit Log list/detail APIs with stable timestamp-and-ID cursor
+  pagination and time, application, actor, action, result, category, execution,
+  and keyword filters;
+- normalized actor, target, request, category, action, and execution-link output
+  while retaining readable legacy and deleted-application events;
+- recursive secret, credential, request-body, environment, path, token, and URL
+  redaction with bounded detail size at the API boundary;
+- responsive Audit Log table, filter controls, pagination, and a detail drawer
+  that safely renders unknown and older event types.
 
 ## API available in this slice
 
@@ -79,12 +91,16 @@ GET    /api/v1/applications/{application_id}/ports
 POST   /api/v1/applications/{application_id}/ports/refresh
 GET    /api/v1/applications/{application_id}/endpoints?scope=local
 GET    /api/v1/system/ports
+GET    /api/v1/dashboard
+GET    /api/v1/audit-events
+GET    /api/v1/audit-events/{event_id}
 GET    /api/v1/auth/status
 POST   /api/v1/auth/setup
 POST   /api/v1/auth/login
 POST   /api/v1/auth/logout
 GET    /api/v1/auth/session
 WS     /ws/system-metrics
+WS     /ws/v1/dashboard
 WS     /ws/v1/applications/{application_id}/logs
 ```
 
@@ -157,18 +173,77 @@ application exists to anonymous callers. Established connections recheck the
 server session and close with code `4401` within approximately two seconds after
 expiry or logout.
 
-Trusted browser origins default to localhost on port 8080 and can be replaced
-with comma-separated `MACHINEDECK_TRUSTED_ORIGINS`. Session lifetime and login
+Browser origins on genuine loopback addresses are trusted on any local port.
+Non-loopback origins must be explicitly listed with comma-separated
+`MACHINEDECK_TRUSTED_ORIGINS`. Session lifetime and login
 window settings are configurable with `MACHINEDECK_AUTH_SESSION_HOURS`,
 `MACHINEDECK_LOGIN_MAX_FAILURES`, and `MACHINEDECK_LOGIN_WINDOW_MINUTES`.
 MachineDeck still binds to `127.0.0.1` by default; a LAN deployment must configure
 its exact trusted HTTPS origin and terminate TLS without disabling Secure Cookies.
+Adding a remote origin does not enable first-run setup: create the administrator
+through `127.0.0.1` or `localhost` on the server before exposing the HTTPS entry
+point.
 
-Authentication acceptance is covered by the full 108-test suite: localhost-only
+Authentication acceptance is covered by the full test suite: localhost-only
 setup, the singleton database constraint, Argon2id persistence, Cookie flags,
 CSRF and hostile-Origin rejection, throttled/recorded login failures, logout and
 expiry revocation, password-error scrubbing, pre-accept WebSocket rejection, and
 established-connection revocation checks all pass.
+
+### Live Dashboard
+
+`MetricsService` owns one continuous collection loop and one immutable latest
+snapshot. REST reads and WebSocket subscribers reuse that snapshot; opening more
+browsers does not create additional psutil or NVML calls. The loop intentionally
+continues without subscribers so REST is immediately current. Each subscriber
+queue has capacity one and replaces an unread snapshot with the newest value.
+
+Snapshots expose `collected_at`, `collection_duration_ms`, and freshness. Data up
+to five seconds old is `LIVE`, five to fifteen seconds is `STALE`, and older data
+is `OFFLINE`. The browser also computes this from `collected_at`, so a disconnected
+stream cannot leave stale numbers looking live. New WebSockets receive the latest
+snapshot immediately and accept no query parameters or tokens.
+
+Host, disk, NVML, and application summary collectors fail independently. Missing
+NVML returns an empty GPU list and `NVML_NOT_AVAILABLE`; a failed GPU remains in
+the list as unavailable without hiding healthy GPUs. Unsupported temperature,
+fan, or power sensors remain null. Configured disks that disappear are marked
+unavailable. Disk paths default to `/`, the user home, and the project disk root,
+and can be replaced with colon-separated `MACHINEDECK_MONITOR_DISKS`.
+
+GPU process enrichment is an independent service and retains PID, process name,
+VRAM, managed ownership, and application ID fields for future GPU scheduling.
+The Phase 1 page displays process counts while preserving the richer API model.
+
+Host acceptance passed on 2026-07-20. The shared collector returned a LIVE
+snapshot in about 111 ms with CPU/RAM and all configured disks, one RTX 3090,
+24 GiB VRAM, utilization, temperature, power, fan, and four GPU processes. A
+temporary end-to-end server then served the frontend with CSP/frame protections,
+returned an authenticated REST snapshot, sent an immediate WebSocket snapshot,
+and closed that socket with `4401` after logout. Temporary database and server
+state were removed. The complete suite now contains 135 passing tests.
+
+### Audit log
+
+Audit events are ordered by creation time and ID, both descending, so cursor
+pagination remains deterministic even when multiple events share a timestamp.
+The list endpoint accepts `start`, `end`, `application_id`, `actor`, `action`,
+`result`, `category`, `execution_id`, and `keyword` filters. Keyword search is
+deliberately limited to non-sensitive indexed event fields rather than raw
+details.
+
+Registry and lifecycle events created through authenticated APIs record the
+administrator username plus a validated request method and API path. Lifecycle
+events link to their persisted execution, including failure codes and safe
+runtime context such as a port conflict. Application names are copied into
+registry audit events so deletion does not make their history unintelligible.
+
+Every response passes through a recursive output sanitizer even though event
+writers are also expected not to persist secrets. Passwords, cookies, session
+and CSRF tokens, authorization values, secret environment containers, sensitive
+paths, credential-like URL parameters, JWTs, excessive nesting, oversized
+collections, and details larger than 16 KiB are redacted or bounded. The UI
+inserts all event-controlled text through DOM text nodes rather than HTML.
 
 ### Ports and Open Web UI
 
@@ -194,8 +269,8 @@ TCP/UDP namespaces remain separate.
 Open Web UI is a validated URL response, never a backend `xdg-open` action.
 Wildcard and loopback endpoints use `MACHINEDECK_PUBLIC_HOST_LOCAL` (default
 `127.0.0.1`) or the optional `MACHINEDECK_PUBLIC_HOST_LAN`; request headers do
-not influence the URL. LAN binding remains prohibited operationally until
-authentication is implemented.
+not influence the URL. LAN deployment requires an exact trusted origin and TLS
+termination so Secure session Cookies remain effective.
 
 Port checks reduce obvious startup failures but cannot eliminate the TOCTOU
 window before the workload binds its socket. Post-start observed status remains
@@ -216,6 +291,9 @@ alembic upgrade head
 python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8080
 ```
 
+Open `http://127.0.0.1:8080/` for first-run administrator setup and the live
+Dashboard. The REST schema remains available at `/docs`.
+
 The default database is `backend/data/machinedeck.db`. Override it with
 `MACHINEDECK_DATABASE_URL`. Allowed application roots default to the parent
 project directory and can be replaced with a colon-separated
@@ -223,7 +301,5 @@ project directory and can be replaced with a colon-separated
 
 ## Next slice
 
-1. Build the initial dashboard and application pages.
-2. Expose execution history and audit-event query APIs and UI.
-3. Add the formal systemd installation and upgrade workflow.
-4. Prepare the Phase 1 release candidate.
+1. Add the formal systemd installation, uninstall, upgrade, and doctor workflow.
+2. Prepare the Phase 1 release candidate.

@@ -62,10 +62,17 @@ class LifecycleService:
         session: Session,
         adapter_factory: AdapterFactory = adapter_for,
         lock_registry: ApplicationLockRegistry = locks,
+        *,
+        actor: str = "phase1-api",
+        request_method: str | None = None,
+        request_path: str | None = None,
     ) -> None:
         self.session = session
         self.adapter_factory = adapter_factory
         self.lock_registry = lock_registry
+        self.actor = actor
+        self.request_method = request_method
+        self.request_path = request_path
 
     def _application(self, application_id: str) -> tuple[ApplicationRecord, ApplicationManifest]:
         record = self.session.get(ApplicationRecord, application_id)
@@ -152,7 +159,7 @@ class LifecycleService:
             application_id=application_id,
             action=action,
             status=ExecutionStatus.RUNNING.value,
-            requested_by="phase1-api",
+            requested_by=self.actor,
             started_at=utc_now(),
         )
         self.session.add(execution)
@@ -167,6 +174,7 @@ class LifecycleService:
         exit_code: int | None = None,
         error_code: str | None = None,
         error_message: str | None = None,
+        details: dict | None = None,
     ) -> None:
         execution.status = (
             ExecutionStatus.SUCCEEDED.value if succeeded else ExecutionStatus.FAILED.value
@@ -175,19 +183,26 @@ class LifecycleService:
         execution.exit_code = exit_code
         execution.error_code = error_code
         execution.error_message = error_message
+        audit_details = {
+            "execution_id": execution.id,
+            "error_code": error_code,
+            "error_message": error_message,
+            **(details or {}),
+        }
+        if self.request_method and self.request_path:
+            audit_details["request"] = {
+                "method": self.request_method,
+                "path": self.request_path,
+            }
         self.session.add(
             AuditEventRecord(
                 id=str(uuid4()),
-                actor="phase1-api",
+                actor=self.actor,
                 action=f"application.{execution.action}",
                 target_type="application",
                 target_id=execution.application_id,
                 result="success" if succeeded else "failure",
-                details_json={
-                    "execution_id": execution.id,
-                    "error_code": error_code,
-                    "error_message": error_message,
-                },
+                details_json=audit_details,
             )
         )
         self.session.commit()
@@ -254,17 +269,21 @@ class LifecycleService:
                         "Cannot safely validate declared ports before startup",
                     ) from exc
                 if conflicts:
+                    conflict_details = [
+                        conflict.model_dump(mode="json") for conflict in conflicts
+                    ]
                     self._finish_execution(
                         execution,
                         False,
                         error_code="PORT_CONFLICT",
                         error_message="One or more declared ports are already in use",
+                        details={"conflicts": conflict_details},
                     )
                     raise LifecycleError(
                         "PORT_CONFLICT",
                         f"One or more declared ports are already in use for {application_id}",
                         details={
-                            "conflicts": [conflict.model_dump(mode="json") for conflict in conflicts]
+                            "conflicts": conflict_details
                         },
                     )
 

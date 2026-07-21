@@ -1,26 +1,26 @@
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
-from typing import Annotated, AsyncIterator
+from collections.abc import Awaitable, Callable
+from typing import AsyncIterator
 
-from fastapi import Depends, FastAPI, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.applications import router as applications_router
+from app.api.audit import router as audit_router
 from app.api.auth import router as auth_router
+from app.api.dashboard import router as dashboard_router
 from app.api.log_websocket import log_connections, router as log_websocket_router
 from app.api.system import router as system_router
 from app.database.session import create_schema
-from app.phase0.report import collect_report
-from app.security.auth import (
-    AuthenticatedSession,
-    authenticate_websocket,
-    require_http_auth,
-    websocket_session_active,
-)
+from app.dashboard.service import metrics_service
+from app.config import PROJECT_ROOT
+from app.schemas.dashboard import DashboardSnapshot
+from app.security.auth import require_http_auth
 from app.systemd.consistency import reconcile_all_user_units
 
 
@@ -31,7 +31,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
     with SessionLocal() as session:
         reconcile_all_user_units(session)
+    await metrics_service.start()
     yield
+    await metrics_service.stop()
     await log_connections.close_all()
 
 
@@ -40,6 +42,24 @@ app.include_router(auth_router)
 app.include_router(applications_router, dependencies=[Depends(require_http_auth)])
 app.include_router(log_websocket_router)
 app.include_router(system_router, dependencies=[Depends(require_http_auth)])
+app.include_router(dashboard_router)
+app.include_router(audit_router, dependencies=[Depends(require_http_auth)])
+
+
+@app.middleware("http")
+async def security_headers(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    response = await call_next(request)
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; script-src 'self'; style-src 'self'; "
+        "connect-src 'self' ws: wss:; img-src 'self' data:; "
+        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Frame-Options"] = "DENY"
+    return response
 
 
 @app.exception_handler(RequestValidationError)
@@ -65,25 +85,13 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "phase": "1"}
 
 
-@app.get("/api/v1/system/overview")
-async def system_overview(
-    _: Annotated[AuthenticatedSession, Depends(require_http_auth)],
-) -> dict:
-    return await asyncio.to_thread(collect_report)
+@app.get("/api/v1/system/overview", dependencies=[Depends(require_http_auth)])
+async def system_overview() -> DashboardSnapshot:
+    return await metrics_service.latest()
 
 
-@app.websocket("/ws/system-metrics")
-async def system_metrics(websocket: WebSocket) -> None:
-    auth_session_id = await authenticate_websocket(websocket)
-    if auth_session_id is None:
-        return
-    await websocket.accept()
-    try:
-        while True:
-            if not websocket_session_active(auth_session_id):
-                await websocket.close(code=4401, reason="Session expired or revoked")
-                return
-            await websocket.send_json(await asyncio.to_thread(collect_report))
-            await asyncio.sleep(2)
-    except WebSocketDisconnect:
-        return
+app.mount(
+    "/",
+    StaticFiles(directory=PROJECT_ROOT / "frontend", html=True),
+    name="frontend",
+)

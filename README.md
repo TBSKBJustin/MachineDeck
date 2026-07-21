@@ -20,6 +20,10 @@ Validated capabilities include:
   Open Web UI endpoint generation;
 - a single-administrator Argon2id login boundary with server-side sessions,
   CSRF protection, login throttling, and pre-accept WebSocket authentication;
+- a shared live Dashboard collector and responsive host, disk, GPU, VRAM, and
+  application-state overview;
+- an authenticated Audit Log browser with stable cursor pagination, operational
+  filters, execution links, and recursive secret redaction;
 - rejection of unregistered applications, unsafe unit names, path traversal,
   arbitrary commands, and lifecycle request arguments;
 - graceful degradation when Docker, NVML, or systemd is unavailable.
@@ -680,10 +684,10 @@ machinedeck/
 - [x] Manual port configuration
 - [x] Port discovery and conflict validation
 - [x] Open Web UI action
-- [ ] CPU, RAM, disk, GPU, and VRAM dashboard
+- [x] CPU, RAM, disk, GPU, and VRAM dashboard
 - [x] SQLite persistence
 - [x] Audit event persistence
-- [ ] Audit log API and UI
+- [x] Audit log API and UI
 - [x] Configuration validation
 - [ ] systemd installation
 

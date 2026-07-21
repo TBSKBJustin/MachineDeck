@@ -26,6 +26,16 @@ def _trusted_origins() -> tuple[str, ...]:
     return tuple(value.strip().rstrip("/") for value in values if value.strip())
 
 
+def _monitor_disks() -> tuple[Path, ...]:
+    configured = os.getenv("MACHINEDECK_MONITOR_DISKS")
+    values = configured.split(os.pathsep) if configured else [
+        "/",
+        str(Path.home()),
+        str(PROJECT_ROOT.parent.parent),
+    ]
+    return tuple(dict.fromkeys(Path(value).expanduser() for value in values if value))
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str = os.getenv(
@@ -51,6 +61,10 @@ class Settings:
     trusted_origins: tuple[str, ...] = _trusted_origins()
     login_max_failures: int = int(os.getenv("MACHINEDECK_LOGIN_MAX_FAILURES", "5"))
     login_window_minutes: int = int(os.getenv("MACHINEDECK_LOGIN_WINDOW_MINUTES", "15"))
+    dashboard_interval_seconds: float = float(
+        os.getenv("MACHINEDECK_DASHBOARD_INTERVAL_SECONDS", "2")
+    )
+    monitor_disks: tuple[Path, ...] = _monitor_disks()
 
 
 settings = Settings()

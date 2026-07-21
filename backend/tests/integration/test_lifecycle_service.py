@@ -210,7 +210,12 @@ async def test_start_port_conflict_is_audited_and_rejected_before_adapter(sessio
     ):
         with pytest.raises(LifecycleError) as raised:
             await LifecycleService(
-                session, lambda _: adapter, ApplicationLockRegistry()
+                session,
+                lambda _: adapter,
+                ApplicationLockRegistry(),
+                actor="admin",
+                request_method="POST",
+                request_path=f"/api/v1/applications/{saved.id}/start",
             ).action(saved.id, "start")
     assert raised.value.code == "PORT_CONFLICT"
     assert raised.value.details["conflicts"][0]["pid"] == 99
@@ -227,6 +232,13 @@ async def test_start_port_conflict_is_audited_and_rejected_before_adapter(sessio
         )
     )
     assert audit.result == "failure"
+    assert audit.actor == "admin"
+    assert audit.details_json["execution_id"] == execution.id
+    assert audit.details_json["conflicts"][0]["port"] == 8188
+    assert audit.details_json["request"] == {
+        "method": "POST",
+        "path": f"/api/v1/applications/{saved.id}/start",
+    }
 
 
 @pytest.mark.asyncio

@@ -76,16 +76,23 @@ def _audit(
     target_id: str,
     result: str = "success",
     details: dict | None = None,
+    *,
+    actor: str = "phase1-api",
+    request_method: str | None = None,
+    request_path: str | None = None,
 ) -> None:
+    audit_details = dict(details or {})
+    if request_method and request_path:
+        audit_details["request"] = {"method": request_method, "path": request_path}
     session.add(
         AuditEventRecord(
             id=str(uuid4()),
-            actor="phase1-api",
+            actor=actor,
             action=action,
             target_type="application",
             target_id=target_id,
             result=result,
-            details_json=details or {},
+            details_json=audit_details,
         )
     )
 
@@ -102,7 +109,14 @@ def get_application(session: Session, application_id: str) -> ApplicationRespons
     return _response(record, session)
 
 
-def create_application(session: Session, manifest: ApplicationManifest) -> ApplicationResponse:
+def create_application(
+    session: Session,
+    manifest: ApplicationManifest,
+    *,
+    actor: str = "phase1-api",
+    request_method: str | None = None,
+    request_path: str | None = None,
+) -> ApplicationResponse:
     if session.get(ApplicationRecord, manifest.id) is not None:
         raise ApplicationExistsError(f"Application already exists: {manifest.id}")
     record = ApplicationRecord(
@@ -130,14 +144,28 @@ def create_application(session: Session, manifest: ApplicationManifest) -> Appli
             metadata_json={},
         )
     )
-    _audit(session, "application.create", manifest.id, details={"runtime_type": manifest.runtime.type})
+    _audit(
+        session,
+        "application.create",
+        manifest.id,
+        details={"runtime_type": manifest.runtime.type, "target_name": manifest.name},
+        actor=actor,
+        request_method=request_method,
+        request_path=request_path,
+    )
     session.commit()
     session.refresh(record)
     return _response(record, session)
 
 
 def update_application(
-    session: Session, application_id: str, manifest: ApplicationManifest
+    session: Session,
+    application_id: str,
+    manifest: ApplicationManifest,
+    *,
+    actor: str = "phase1-api",
+    request_method: str | None = None,
+    request_path: str | None = None,
 ) -> ApplicationResponse:
     if application_id != manifest.id:
         raise ValueError("Manifest id must match the application id in the URL")
@@ -150,17 +178,40 @@ def update_application(
     record.runtime_type = manifest.runtime.type
     record.config_yaml = _serialize_manifest(manifest)
     record.enabled = manifest.enabled
-    _audit(session, "application.update", application_id, details={"runtime_type": manifest.runtime.type})
+    _audit(
+        session,
+        "application.update",
+        application_id,
+        details={"runtime_type": manifest.runtime.type, "target_name": manifest.name},
+        actor=actor,
+        request_method=request_method,
+        request_path=request_path,
+    )
     session.commit()
     session.refresh(record)
     return _response(record, session)
 
 
-def delete_application(session: Session, application_id: str) -> None:
+def delete_application(
+    session: Session,
+    application_id: str,
+    *,
+    actor: str = "phase1-api",
+    request_method: str | None = None,
+    request_path: str | None = None,
+) -> None:
     record = session.get(ApplicationRecord, application_id)
     if record is None:
         raise ApplicationNotFoundError(f"Application not found: {application_id}")
     _reject_active_application(session, application_id)
     session.delete(record)
-    _audit(session, "application.delete", application_id)
+    _audit(
+        session,
+        "application.delete",
+        application_id,
+        details={"target_name": record.name},
+        actor=actor,
+        request_method=request_method,
+        request_path=request_path,
+    )
     session.commit()
