@@ -25,8 +25,10 @@ user. Do not run the installation scripts through `sudo`.
 ```
 
 Each release has its own virtual environment so a dependency upgrade cannot
-make the previous release unstartable. The `current` link is validated to remain
-inside the releases directory and is changed with an atomic rename. State,
+make the previous release unstartable. It is built at its final path with an
+`.installing` marker so virtualenv console-script shebangs remain valid; the
+release cannot become active until the marker is removed. The `current` link is
+validated to remain inside the releases directory and is changed with an atomic rename. State,
 configuration, audit history, managed application units, and user workloads are
 outside the release directory.
 
@@ -40,11 +42,18 @@ already using it.
 ./scripts/install.sh
 ```
 
-The installer validates the source tree and destination paths, rejects execution
-as root, creates a staged release and release-specific venv, installs local
+The installer validates the source tree, destination paths, and SQLite state
+directory write access, rejects execution as root, prints every target root,
+creates a staged release and release-specific venv, installs local
 dependencies, validates the generated unit with `systemd-analyze --user verify`,
 runs Alembic migrations, atomically selects the release, enables the service,
 and waits for `http://127.0.0.1:8080/health`.
+
+The alpha `standard` service profile uses user-manager-compatible controls:
+`NoNewPrivileges`, `PrivateTmp`, `RestrictSUIDSGID`, `LockPersonality`, and
+control-group process termination. Kernel, control-group filesystem, and module
+protection directives are intentionally deferred until a separate hardened
+profile because they are not portable across Ubuntu user-manager environments.
 
 To keep the user manager running after logout, explicitly request linger:
 
@@ -60,9 +69,9 @@ The interactive command asks for confirmation. Automation must be explicit:
 
 `--no-start` installs and migrates without enabling or starting the service.
 
-The generated `config.toml` has mode `0600`, contains no administrator password,
-and is never overwritten by a repeated installation. Environment variables
-continue to take precedence over TOML values.
+The generated `config.toml` and SQLite database have mode `0600`. Configuration
+contains no administrator password and is never overwritten by a repeated
+installation. Environment variables continue to take precedence over TOML values.
 
 ## Upgrade
 

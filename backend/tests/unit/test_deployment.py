@@ -32,6 +32,7 @@ class FakeRunner:
         self.active = active
         self.fail_on = fail_on
         self.commands: list[list[str]] = []
+        self.environments: list[dict[str, str] | None] = []
 
     def run(
         self,
@@ -44,6 +45,7 @@ class FakeRunner:
     ) -> subprocess.CompletedProcess[str]:
         command = [str(argument) for argument in arguments]
         self.commands.append(command)
+        self.environments.append(env)
         joined = " ".join(command)
         if self.fail_on and self.fail_on in joined:
             raise subprocess.CalledProcessError(1, command)
@@ -54,6 +56,10 @@ class FakeRunner:
             binary_dir.mkdir(parents=True)
             (binary_dir / "python").touch(mode=0o755)
             (binary_dir / "alembic").touch(mode=0o755)
+        if command[1:3] == ["-m", "pip"]:
+            console_script = Path(command[0]).parent / "machinedeck"
+            console_script.write_text(f"#!{command[0]}\n")
+            console_script.chmod(0o755)
         if command and command[0].endswith("/alembic"):
             self.database.parent.mkdir(parents=True, exist_ok=True)
             with sqlite3.connect(self.database) as connection:
@@ -87,6 +93,28 @@ def test_rendered_config_and_unit_use_persistent_paths_and_safe_service_type(pat
     assert str(paths.current / "venv" / "bin" / "python") in unit
     assert "NoNewPrivileges=true" in unit
     assert "KillMode=control-group" in unit
+    assert "ProtectKernelModules" not in unit
+    assert "ProtectKernelTunables" not in unit
+    assert "ProtectControlGroups" not in unit
+    assert f"WorkingDirectory={paths.current}/backend" in unit
+    assert f'Environment="MACHINEDECK_CONFIG={paths.config}"' in unit
+
+
+def test_unit_paths_are_escaped_without_turning_quotes_into_path_characters(tmp_path: Path) -> None:
+    paths = deploy_module.InstallPaths.discover(
+        {
+            "HOME": str(tmp_path / "home with spaces"),
+            "XDG_DATA_HOME": str(tmp_path / "data with spaces"),
+            "XDG_STATE_HOME": str(tmp_path / "state"),
+            "XDG_CONFIG_HOME": str(tmp_path / "config with spaces"),
+        }
+    )
+    unit = deploy_module.render_unit(paths)
+    assert "WorkingDirectory=\"" not in unit
+    assert "\\x20" in next(
+        line for line in unit.splitlines() if line.startswith("WorkingDirectory=")
+    )
+    assert f'Environment="MACHINEDECK_CONFIG={paths.config}"' in unit
 
 
 def test_install_is_atomic_idempotent_and_preserves_configuration(
@@ -105,8 +133,21 @@ def test_install_is_atomic_idempotent_and_preserves_configuration(
     assert paths.config.read_text() == original_config
     assert paths.config.stat().st_mode & 0o777 == 0o600
     assert paths.unit.stat().st_mode & 0o777 == 0o644
+    assert (paths.state / "machinedeck.db").stat().st_mode & 0o777 == 0o600
+    assert (release / "venv" / "bin" / "machinedeck").read_text().splitlines()[0] == (
+        f"#!{release}/venv/bin/python"
+    )
+    assert not (release / ".installing").exists()
     assert any(command[:3] == ["systemctl", "--user", "enable"] for command in runner.commands)
     assert any(command[:3] == ["systemd-analyze", "--user", "verify"] for command in runner.commands)
+    migration_env = next(
+        environment
+        for command, environment in zip(runner.commands, runner.environments)
+        if command and command[0].endswith("/alembic")
+    )
+    assert migration_env["MACHINEDECK_DATABASE_URL"] == (
+        f"sqlite:///{paths.state}/machinedeck.db"
+    )
 
 
 def test_upgrade_failure_restores_release_unit_and_database(
@@ -149,6 +190,24 @@ def test_first_install_daemon_reload_failure_removes_partial_state(
     assert not [path for path in paths.releases.iterdir() if not path.name.startswith(".")]
 
 
+def test_failed_health_check_disables_partially_enabled_first_install(
+    paths: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(deploy_module, "_port_available", lambda: True)
+
+    def unhealthy() -> None:
+        raise deploy_module.DeployError("health check failed")
+
+    monkeypatch.setattr(deploy_module, "_wait_for_health", unhealthy)
+    runner = FakeRunner(paths.state / "machinedeck.db")
+    with pytest.raises(deploy_module.DeployError, match="health check failed"):
+        deploy_module.deploy(source_root(), paths, runner, upgrade=False)
+    assert ["systemctl", "--user", "disable", "--now", "machinedeck.service"] in runner.commands
+    assert not paths.current.exists()
+    assert not paths.unit.exists()
+    assert not (paths.state / "machinedeck.db").exists()
+
+
 def test_uninstall_preserves_data_and_managed_units_unless_explicitly_removed(
     paths: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -189,3 +248,16 @@ def test_install_rejects_machine_deck_target_symlink(paths: object, tmp_path: Pa
     runner = FakeRunner(paths.state / "machinedeck.db")
     with pytest.raises(deploy_module.DeployError, match="unsafe symlink"):
         deploy_module.deploy(source_root(), paths, runner, upgrade=False)
+
+
+def test_sqlite_write_preflight_reports_state_path(
+    paths: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deploy_module._prepare_paths(paths)
+
+    def denied(_: object) -> None:
+        raise sqlite3.OperationalError("permission denied")
+
+    monkeypatch.setattr(deploy_module.sqlite3, "connect", denied)
+    with pytest.raises(deploy_module.DeployError, match=str(paths.state)):
+        deploy_module._validate_sqlite_writable(paths)

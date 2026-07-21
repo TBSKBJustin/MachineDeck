@@ -17,9 +17,6 @@ Environment=MACHINEDECK_PROJECT_ROOT=%h/.local/share/machinedeck/current
 Environment=PYTHONUNBUFFERED=1
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectControlGroups=true
-ProtectKernelModules=true
-ProtectKernelTunables=true
 RestrictSUIDSGID=true
 LockPersonality=true
 

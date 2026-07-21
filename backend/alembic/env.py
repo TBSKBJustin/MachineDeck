@@ -11,7 +11,13 @@ from app.database import models  # noqa: F401
 
 
 config = context.config
-configured_url = os.getenv("MACHINEDECK_DATABASE_URL", config.get_main_option("sqlalchemy.url"))
+configured_url = os.getenv("MACHINEDECK_DATABASE_URL")
+if configured_url is None and os.getenv("MACHINEDECK_CONFIG"):
+    from app.config import settings
+
+    configured_url = settings.database_url
+if configured_url is None:
+    configured_url = config.get_main_option("sqlalchemy.url")
 config.set_main_option("sqlalchemy.url", configured_url)
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

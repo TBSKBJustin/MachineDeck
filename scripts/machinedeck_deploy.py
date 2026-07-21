@@ -139,6 +139,19 @@ def _prepare_paths(paths: InstallPaths) -> None:
     _ensure_not_symlink(paths.unit, "service unit")
 
 
+def _validate_sqlite_writable(paths: InstallPaths) -> None:
+    probe = paths.state / f".sqlite-write-test-{uuid4().hex}.db"
+    try:
+        with sqlite3.connect(probe) as connection:
+            connection.execute("PRAGMA user_version")
+        probe.unlink()
+    except (OSError, sqlite3.Error) as exc:
+        probe.unlink(missing_ok=True)
+        raise DeployError(
+            f"SQLite state directory is not writable: {paths.state}: {exc}"
+        ) from exc
+
+
 def _source_version(source: Path) -> str:
     pyproject = source / "backend" / "pyproject.toml"
     try:
@@ -176,7 +189,6 @@ def _validate_source(source: Path) -> Path:
 
 
 def _copy_source(source: Path, destination: Path) -> None:
-    destination.mkdir(mode=0o755)
     backend = destination / "backend"
     backend.mkdir(mode=0o755)
     shutil.copytree(source / "backend" / "app", backend / "app")
@@ -244,7 +256,26 @@ def render_config(paths: InstallPaths) -> str:
 
 def _systemd_quote(value: str | Path) -> str:
     text = _validate_text(str(value), "systemd value")
-    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
+
+
+def _systemd_path(value: str | Path) -> str:
+    text = _validate_text(str(value), "systemd path")
+    safe = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-"
+    output: list[str] = []
+    for byte in text.encode("utf-8"):
+        if byte in safe:
+            output.append(chr(byte))
+        elif byte == ord("%"):
+            output.append("%%")
+        else:
+            output.append(f"\\x{byte:02x}")
+    return "".join(output)
+
+
+def _systemd_environment(name: str, value: str | Path) -> str:
+    _validate_text(name, "environment name")
+    return f"Environment={_systemd_quote(f'{name}={value}')}"
 
 
 def render_unit(paths: InstallPaths, release_root: Path | None = None) -> str:
@@ -260,21 +291,18 @@ def render_unit(paths: InstallPaths, release_root: Path | None = None) -> str:
             "",
             "[Service]",
             "Type=simple",
-            f"WorkingDirectory={_systemd_quote(working_directory)}",
+            f"WorkingDirectory={_systemd_path(working_directory)}",
             f"ExecStart={_systemd_quote(python)} -m uvicorn app.main:app --host 127.0.0.1 --port 8080",
             "Restart=on-failure",
             "RestartSec=5",
             "TimeoutStartSec=60",
             "TimeoutStopSec=30",
             "KillMode=control-group",
-            f"Environment=MACHINEDECK_CONFIG={_systemd_quote(paths.config)}",
-            f"Environment=MACHINEDECK_PROJECT_ROOT={_systemd_quote(root)}",
+            _systemd_environment("MACHINEDECK_CONFIG", paths.config),
+            _systemd_environment("MACHINEDECK_PROJECT_ROOT", root),
             "Environment=PYTHONUNBUFFERED=1",
             "NoNewPrivileges=true",
             "PrivateTmp=true",
-            "ProtectControlGroups=true",
-            "ProtectKernelModules=true",
-            "ProtectKernelTunables=true",
             "RestrictSUIDSGID=true",
             "LockPersonality=true",
             "",
@@ -423,6 +451,7 @@ def deploy(
     _reject_root()
     source = _validate_source(source)
     _prepare_paths(paths)
+    _validate_sqlite_writable(paths)
     old_release = _current_target(paths)
     if upgrade and old_release is None:
         raise DeployError("MachineDeck is not installed; run install first")
@@ -434,10 +463,17 @@ def deploy(
     runner.run(["systemctl", "--user", "show-environment"], capture=True)
 
     version = _source_version(source)
+    print(f"Install root: {paths.share}")
+    print(f"State root: {paths.state}")
+    print(f"Configuration: {paths.config}")
     release = paths.releases / _release_name(version, upgrade=upgrade)
     if release.exists() or release.is_symlink():
-        raise DeployError(f"Release already exists: {release}")
-    staging = paths.releases / f".staging-{uuid4().hex}"
+        incomplete = release / ".installing"
+        if incomplete.is_file() and release != old_release:
+            shutil.rmtree(release)
+        else:
+            raise DeployError(f"Release already exists: {release}")
+    staging = release
     old_unit = paths.unit.read_bytes() if paths.unit.exists() else None
     backup: Path | None = None
     database_existed = _database_path(paths).exists()
@@ -445,6 +481,8 @@ def deploy(
     stopped_old_service = False
     switched = False
     try:
+        staging.mkdir(mode=0o755)
+        _atomic_write(staging / ".installing", "incomplete\n", 0o600)
         _copy_source(source, staging)
         runner.run([sys.executable, "-m", "venv", staging / "venv"])
         runner.run(
@@ -466,6 +504,7 @@ def deploy(
         migration_environment.update(
             {
                 "MACHINEDECK_CONFIG": str(paths.config),
+                "MACHINEDECK_DATABASE_URL": f"sqlite:///{_database_path(paths)}",
                 "MACHINEDECK_PROJECT_ROOT": str(staging),
             }
         )
@@ -474,7 +513,8 @@ def deploy(
             cwd=staging / "backend",
             env=migration_environment,
         )
-        os.replace(staging, release)
+        os.chmod(_database_path(paths), 0o600)
+        (staging / ".installing").unlink()
         _switch_current(paths, release)
         switched = True
         _atomic_write(paths.unit, render_unit(paths), 0o644)
@@ -490,6 +530,13 @@ def deploy(
             _wait_for_health()
         return release
     except Exception:
+        if old_release is None:
+            _best_effort(
+                runner,
+                ["systemctl", "--user", "disable", "--now", SERVICE_NAME],
+            )
+        else:
+            _best_effort(runner, ["systemctl", "--user", "stop", SERVICE_NAME])
         if switched:
             if old_release is not None:
                 _switch_current(paths, old_release)
@@ -590,6 +637,12 @@ def doctor(paths: InstallPaths, runner: CommandRunner) -> tuple[int, list[Doctor
         record("PASS" if mode & 0o077 == 0 else "ERROR", "Configuration permissions", oct(mode))
     database = _database_path(paths)
     if database.exists() and not database.is_symlink():
+        database_mode = database.stat().st_mode & 0o777
+        record(
+            "PASS" if database_mode & 0o077 == 0 else "ERROR",
+            "Database permissions",
+            oct(database_mode),
+        )
         try:
             with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as connection:
                 revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()

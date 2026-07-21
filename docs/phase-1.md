@@ -229,7 +229,7 @@ snapshot in about 111 ms with CPU/RAM and all configured disks, one RTX 3090,
 temporary end-to-end server then served the frontend with CSP/frame protections,
 returned an authenticated REST snapshot, sent an immediate WebSocket snapshot,
 and closed that socket with `4401` after logout. Temporary database and server
-state were removed. The complete suite now contains 142 passing tests.
+state were removed. The complete suite now contains 145 passing tests.
 
 ### Audit log
 
