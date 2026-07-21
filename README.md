@@ -6,7 +6,7 @@
 
 **Phase 0 — Technical Validation: Complete**
 
-**Phase 1 — MVP: In progress**
+**Phase 1 — MVP: Complete**
 
 Validated capabilities include:
 
@@ -21,7 +21,8 @@ Validated capabilities include:
 - a single-administrator Argon2id login boundary with server-side sessions,
   CSRF protection, login throttling, and pre-accept WebSocket authentication;
 - a shared live Dashboard collector and responsive host, disk, GPU, VRAM, and
-  application-state overview;
+  application overview with manifest registration, lifecycle controls, safe Web
+  UI links, and authenticated live logs;
 - an authenticated Audit Log browser with stable cursor pagination, operational
   filters, execution links, and recursive secret redaction;
 - rejection of unregistered applications, unsafe unit names, path traversal,
@@ -687,11 +688,12 @@ machinedeck/
 - [x] Port discovery and conflict validation
 - [x] Open Web UI action
 - [x] CPU, RAM, disk, GPU, and VRAM dashboard
+- [x] Application registration and lifecycle Dashboard UI
 - [x] SQLite persistence
 - [x] Audit event persistence
 - [x] Audit log API and UI
 - [x] Configuration validation
-- [ ] systemd installation (implementation complete; host acceptance pending)
+- [x] systemd installation
 
 ### Phase 2 — Automation and Reliability
 

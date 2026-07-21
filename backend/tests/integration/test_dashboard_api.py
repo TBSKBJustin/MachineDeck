@@ -158,5 +158,14 @@ async def test_frontend_assets_exist_and_http_has_strict_browser_security_header
     assert "MachineDeck" in markup
     assert "Audit log" in markup
     assert 'id="audit-execution-id"' in markup
-    assert (frontend / "app.js").is_file()
+    assert 'id="application-list"' in markup
+    assert 'id="application-form"' in markup
+    assert 'id="application-runtime"' in markup
+    assert 'id="port-list"' in markup
+    assert 'id="log-output"' in markup
+    script = (frontend / "app.js").read_text(encoding="utf-8")
+    assert '"/api/v1/applications/validate"' in script
+    assert "/ws/v1/applications/" in script
+    assert "data-application-action" in script
+    assert "query string" not in script.lower()
     assert (frontend / "styles.css").is_file()

@@ -57,6 +57,10 @@ frontend/coverage/
 data/
 runtime/
 
+# Local development specification contains host-specific paths and personal data
+/Doc/MachineDeck_Development_Specification.md
+/docs/MachineDeck_Development_Specification.md
+
 # Logs and process files
 *.log
 logs/

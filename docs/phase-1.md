@@ -1,8 +1,8 @@
 # Phase 1: MVP
 
-Phase 1 is in progress. The first backend slice establishes a persistent,
-validated application registry before persisted applications are allowed to
-control host workloads.
+Phase 1 is complete. It provides a persistent, authenticated local control plane,
+validated runtime operations, live observability, audit browsing, and a tested
+user-service installation lifecycle.
 
 ## Completed foundation
 
@@ -59,6 +59,9 @@ control host workloads.
 - bounded latest-value subscriber queues so slow clients cannot block collection;
 - responsive first-run/login and Dashboard pages with LIVE, STALE, and OFFLINE
   semantics and per-collector degraded-state presentation.
+- Dashboard application cards with Process and Docker Compose registration,
+  backend manifest validation, edit/delete safeguards, start/stop/restart
+  controls, trusted endpoint links, and authenticated live-log streaming;
 - authenticated Audit Log list/detail APIs with stable timestamp-and-ID cursor
   pagination and time, application, actor, action, result, category, execution,
   and keyword filters;
@@ -309,9 +312,9 @@ project directory and can be replaced with a colon-separated
 
 ## Next slice
 
-1. Run the complete install/upgrade/rollback/uninstall/reinstall host acceptance
-   using the real systemd user manager.
-2. Freeze the alpha directory layout and prepare the Phase 1 release candidate.
+1. Freeze the alpha directory layout and prepare the Phase 1 release candidate.
+2. Publish the documented release archive, checksum, known limitations, and
+   security notes.
 
 ### Installation host acceptance
 
@@ -328,5 +331,12 @@ Engine 29.4.2, Docker Compose v5.1.3, journal access, one NVML GPU, and managed
 units as healthy. Configuration and database permissions were both `0600`.
 Linger remains disabled by explicit user choice and is the sole warning.
 
-Default uninstall/data-preservation/reinstall and explicit purge remain to be
-validated before the roadmap installation item is marked complete.
+Default uninstall removed the service and application releases while retaining
+state, configuration, and the managed application unit. Reinstall reused the
+existing revision-`0003` database without rerunning migrations, restored an
+enabled and active service, passed HTTP health, and again produced a Doctor
+result of `HEALTHY WITH WARNINGS` with linger as the sole warning. The active
+release returned to `0.1.0`, configuration and database permissions remained
+`0600`, and the systemd installation roadmap item is complete. Destructive purge
+behavior remains covered by isolated automated tests rather than deleting the
+accepted host database.

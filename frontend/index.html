@@ -104,7 +104,16 @@
 
         <section class="section-block">
           <div class="section-heading">
-            <div><div class="eyebrow">WORKLOADS</div><h3>Application states</h3></div>
+            <div><div class="eyebrow">WORKLOADS</div><h3>Applications</h3></div>
+            <button id="application-add" class="primary-button compact" type="button">Add application</button>
+          </div>
+          <div id="application-error" class="application-error" role="alert"></div>
+          <div id="application-list" class="application-list"></div>
+        </section>
+
+        <section class="section-block">
+          <div class="section-heading">
+            <div><div class="eyebrow">RUNTIME SUMMARY</div><h3>Application states</h3></div>
           </div>
           <div id="application-states" class="state-grid"></div>
         </section>
@@ -161,6 +170,57 @@
       <dl id="audit-detail-meta" class="detail-meta"></dl>
       <section id="audit-execution-section" class="drawer-section hidden"><h3>Execution</h3><div id="audit-execution" class="execution-card"></div></section>
       <section class="drawer-section"><h3>Sanitized details</h3><pre id="audit-detail-json">{}</pre></section>
+    </aside>
+
+    <div id="application-form-backdrop" class="drawer-backdrop hidden"></div>
+    <aside id="application-form-drawer" class="application-drawer hidden" aria-labelledby="application-form-title">
+      <div class="drawer-head">
+        <div><div class="eyebrow">APPLICATION MANIFEST</div><h2 id="application-form-title">Add application</h2></div>
+        <button id="application-form-close" class="drawer-close" type="button" aria-label="Close">×</button>
+      </div>
+      <form id="application-form" class="application-form">
+        <div class="form-grid">
+          <label>Application ID<input id="application-id" required maxlength="64" pattern="[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?" placeholder="comfyui" /></label>
+          <label>Name<input id="application-name" required maxlength="200" placeholder="ComfyUI" /></label>
+        </div>
+        <label>Description<textarea id="application-description" maxlength="4000" rows="2" placeholder="What this application does"></textarea></label>
+        <div class="form-grid">
+          <label>Runtime
+            <select id="application-runtime"><option value="process">Process / Python venv</option><option value="compose">Docker Compose</option></select>
+          </label>
+          <label class="toggle-label"><input id="application-enabled" type="checkbox" checked /><span>Application enabled</span></label>
+        </div>
+        <label>Working directory<input id="application-working-dir" required placeholder="/home/user/apps/comfyui" /></label>
+        <div id="process-fields" class="runtime-fields">
+          <label>Command arguments<textarea id="application-command" rows="5" placeholder="/home/user/apps/comfyui/.venv/bin/python&#10;main.py&#10;--listen&#10;0.0.0.0"></textarea><small>One argument per line. The first line must be an absolute executable path; no shell is used.</small></label>
+        </div>
+        <div id="compose-fields" class="runtime-fields hidden">
+          <div class="form-grid">
+            <label>Compose file<input id="application-compose-file" value="compose.yaml" placeholder="compose.yaml" /></label>
+            <label>Project name<input id="application-project-name" placeholder="optional-project-name" /></label>
+          </div>
+        </div>
+        <div class="form-grid">
+          <label>Environment<textarea id="application-environment" rows="4" placeholder="DEMO_PORT=18081&#10;PYTHONUNBUFFERED=1"></textarea><small>One NAME=value entry per line. Do not store secrets here.</small></label>
+          <label>Tags<input id="application-tags" placeholder="ai, gpu, web" /><small>Comma-separated lowercase tags.</small></label>
+        </div>
+        <section class="port-editor">
+          <div class="port-editor-head"><div><h3>Declared ports</h3><p>Used for conflict checks and Web UI links.</p></div><button id="port-add" class="secondary-button" type="button">Add port</button></div>
+          <div id="port-list" class="port-list"></div>
+        </section>
+        <div id="application-form-message" class="form-message" role="status"></div>
+        <div class="form-actions"><button id="application-validate" class="secondary-button" type="button">Validate</button><button id="application-save" class="primary-button" type="submit">Register application</button></div>
+      </form>
+    </aside>
+
+    <div id="log-drawer-backdrop" class="drawer-backdrop hidden"></div>
+    <aside id="log-drawer" class="log-drawer hidden" aria-labelledby="log-title">
+      <div class="drawer-head">
+        <div><div class="eyebrow">LIVE OUTPUT</div><h2 id="log-title">Application logs</h2><p id="log-status">Connecting…</p></div>
+        <button id="log-close" class="drawer-close" type="button" aria-label="Close">×</button>
+      </div>
+      <div class="log-toolbar"><button id="log-clear" class="secondary-button" type="button">Clear</button><label class="toggle-label"><input id="log-follow" type="checkbox" checked /><span>Follow output</span></label></div>
+      <pre id="log-output" class="log-output" aria-live="polite"></pre>
     </aside>
 
     <script src="/app.js" defer></script>
