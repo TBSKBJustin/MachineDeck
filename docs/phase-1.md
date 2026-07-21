@@ -312,3 +312,21 @@ project directory and can be replaced with a colon-separated
 1. Run the complete install/upgrade/rollback/uninstall/reinstall host acceptance
    using the real systemd user manager.
 2. Freeze the alpha directory layout and prepare the Phase 1 release candidate.
+
+### Installation host acceptance
+
+User-service install and atomic local-source upgrade passed on the Ubuntu host on
+2026-07-21. Installation validated the generated unit, applied Alembic revisions
+`0001` through `0003`, enabled and started `machinedeck.service`, and passed the
+loopback HTTP health check. The subsequent upgrade built a release-specific venv
+at its final path, created a 143,360-byte SQLite backup, atomically changed
+`current`, restarted the service, and retained the previous `0.1.0` release.
+
+Doctor reported the release version, Python 3.10.12, configuration, SQLite
+database and revision `0003`, user bus, active service and PID, HTTP 200, Docker
+Engine 29.4.2, Docker Compose v5.1.3, journal access, one NVML GPU, and managed
+units as healthy. Configuration and database permissions were both `0600`.
+Linger remains disabled by explicit user choice and is the sole warning.
+
+Default uninstall/data-preservation/reinstall and explicit purge remain to be
+validated before the roadmap installation item is marked complete.
