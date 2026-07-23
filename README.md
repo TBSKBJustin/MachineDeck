@@ -625,6 +625,115 @@ Running the controller inside Docker is not recommended for the first release be
 - journals;
 - application directories.
 
+## Install and Operate MachineDeck
+
+MachineDeck currently supports Ubuntu/Linux hosts with Python 3.10 or newer and
+a working systemd user manager. Install and operate it as your normal user. Do
+not run the installation scripts or `systemctl --user` commands through `sudo`.
+
+### Install
+
+From the MachineDeck source directory:
+
+```bash
+cd /path/to/MachineDeck
+./scripts/install.sh
+```
+
+The installer creates a release-specific virtual environment, installs the
+backend and frontend, applies database migrations, installs and enables the
+`machinedeck.service` user unit, starts it, and verifies its health. Open the
+local interface at:
+
+```text
+http://127.0.0.1:8080
+```
+
+To keep MachineDeck running after you log out, explicitly enable linger during
+installation:
+
+```bash
+./scripts/install.sh --enable-linger
+```
+
+Use `--no-start` to install without enabling or starting the service:
+
+```bash
+./scripts/install.sh --no-start
+```
+
+### Start, Stop, and Restart
+
+MachineDeck is managed as a user-level systemd service:
+
+```bash
+systemctl --user start machinedeck.service
+systemctl --user stop machinedeck.service
+systemctl --user restart machinedeck.service
+```
+
+Check its current status and recent logs with:
+
+```bash
+systemctl --user status machinedeck.service
+journalctl --user -u machinedeck.service -n 100
+```
+
+Follow logs continuously:
+
+```bash
+journalctl --user -u machinedeck.service --follow
+```
+
+### Update
+
+After updating the source checkout, deploy that checkout as a new local release:
+
+```bash
+cd /path/to/MachineDeck
+./scripts/upgrade.sh --from-local .
+```
+
+The upgrade command stops the active service, backs up SQLite state, builds and
+validates the new release, applies migrations, restarts MachineDeck, and performs
+a health check. If deployment fails, it attempts to restore the previous code,
+unit, and database state.
+
+Run the installation diagnostics after an install or update:
+
+```bash
+./scripts/doctor.sh
+```
+
+### Uninstall
+
+The default uninstall removes the MachineDeck service and installed releases
+while preserving the database, administrator account, configuration, audit
+history, and managed application units:
+
+```bash
+./scripts/uninstall.sh
+```
+
+Permanently remove MachineDeck state and configuration only when explicitly
+intended:
+
+```bash
+./scripts/uninstall.sh --purge --yes
+```
+
+Managed application units are still retained by a purge. Removing those units
+requires a separate destructive option:
+
+```bash
+./scripts/uninstall.sh --purge --remove-managed-units --yes
+```
+
+Uninstalling MachineDeck does not delete application directories, Docker images,
+containers, volumes, or other user workload data. See
+[`docs/installation.md`](docs/installation.md) for installation layout,
+Tailscale access, rollback behavior, and complete operational details.
+
 ---
 
 ## Planned Project Structure
