@@ -33,6 +33,7 @@ Phase 0 uses user-level systemd without sudo or root privileges. See
 [`docs/phase-0.md`](docs/phase-0.md) for the validation record and
 [`docs/installation.md`](docs/installation.md) for the Phase 1 installation,
 upgrade, doctor, uninstall, rollback, and Tailscale workflow. See
+[`docs/phase-1.5.md`](docs/phase-1.5.md) for the network-access milestone and
 [`docs/security-milestone.md`](docs/security-milestone.md) for the future
 system-wide service design.
 
@@ -649,6 +650,30 @@ local interface at:
 http://127.0.0.1:8080
 ```
 
+Local-only access is the default. Choose native home-LAN access explicitly:
+
+```bash
+./scripts/install.sh --access lan
+```
+
+LAN mode binds MachineDeck to `0.0.0.0`, adds detected hostname and LAN-IP
+Origins, and uses a non-Secure session Cookie so browsers can authenticate over
+LAN HTTP. LAN traffic is not encrypted; limit port 8080 to the intended private
+subnet and never forward it directly from an internet router.
+
+For Tailscale Serve or an HTTPS reverse proxy, retain the loopback binding and
+provide the exact external HTTPS Origin:
+
+```bash
+./scripts/install.sh \
+  --access tailscale \
+  --trusted-origin https://machine-name.tailnet-name.ts.net
+```
+
+The initial administrator must still be created from a browser on the host
+through `127.0.0.1` or `localhost`. A proxy connection is not treated as local
+setup merely because its TCP peer is loopback.
+
 To keep MachineDeck running after you log out, explicitly enable linger during
 installation:
 
@@ -806,20 +831,22 @@ machinedeck/
 
 ### Phase 1.5 — Network Access
 
-**Product principle:** LAN-first, local-first, and never public-by-default.
+**Product principle:** Local-first, LAN-ready, and never public-by-default.
 
-- [ ] Add explicit `local`, `lan`, and `proxy` server access modes
-- [ ] Keep `local` as the safe default and bind it to `127.0.0.1`
-- [ ] Support native home-LAN access through an explicit `0.0.0.0` binding
-- [ ] Support Tailnet HTTPS and trusted reverse-proxy deployments
-- [ ] Add configured `auto`, secure, and non-secure session Cookie policies
-- [ ] Never infer Cookie security or public URLs from untrusted forwarded headers
-- [ ] Add trusted proxy, trusted Origin, and trusted network configuration
-- [ ] Add `--access local|lan|tailscale` installation choices
-- [ ] Preserve the selected access mode during upgrades and rollback
-- [ ] Show detected local, LAN, and Tailnet access URLs after installation
-- [ ] Extend `machinedeck doctor` with binding, Origin, Cookie, proxy, and
-  firewall-policy checks
+- [x] Add explicit `local`, `lan`, and `proxy` server access modes
+- [x] Keep `local` as the safe default and bind it to `127.0.0.1`
+- [x] Support native home-LAN access through an explicit `0.0.0.0` binding
+- [x] Support Tailnet HTTPS and explicitly configured reverse-proxy Origins
+- [x] Add configured `auto`, secure, and non-secure session Cookie policies
+- [x] Never infer Cookie security or public URLs from untrusted forwarded headers
+- [x] Add distinct trusted proxy, trusted Origin, and trusted network
+  configuration
+- [x] Add `--access local|lan|tailscale` installation choices
+- [x] Preserve the selected access mode during upgrades and rollback
+- [x] Show detected local, LAN, and Tailnet access URLs after installation
+- [x] Extend `machinedeck doctor` with binding, Origin, and Cookie checks
+- [x] Extend `machinedeck doctor` with trusted-proxy and trusted-network checks
+- [ ] Extend `machinedeck doctor` with firewall-policy checks
 - [ ] Add a Settings UI for reviewing and changing the access mode safely
 - [ ] Add `local`, `lan`, `tailnet`, and `custom` application endpoint exposure
   policies

@@ -38,6 +38,12 @@ password_hasher = PasswordHasher(
 )
 DUMMY_PASSWORD_HASH = password_hasher.hash("machinedeck-dummy-password-never-valid")
 CSRF_HEADER = "X-CSRF-Token"
+FORWARDED_HEADERS = {
+    "forwarded",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+}
 
 
 def utc_now() -> datetime:
@@ -69,11 +75,14 @@ def origin_is_trusted(origin: str | None) -> bool:
     if origin is None:
         return False
     normalized = origin.rstrip("/")
-    if normalized in settings.trusted_origins:
-        return True
+    return normalized in settings.trusted_origins
+
+
+def origin_is_local(origin: str | None) -> bool:
+    if origin is None:
+        return False
     try:
         parsed = urlsplit(origin)
-        # Accessing port also validates that it is numeric and in range.
         _ = parsed.port
     except ValueError:
         return False
@@ -104,6 +113,167 @@ class AuthenticatedSession:
     administrator: AdministratorRecord
     session: AuthSessionRecord
     csrf_token: str | None = None
+
+
+@dataclass(frozen=True)
+class RequestNetworkContext:
+    peer: str
+    client: str
+    scheme: str
+    host: str | None
+    forwarded: bool = False
+
+
+def _address(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    candidate = value.strip().strip('"')
+    if not candidate or candidate.lower() == "unknown" or candidate.startswith("_"):
+        raise ValueError("Forwarded client address is not an IP literal")
+    if candidate.startswith("["):
+        closing = candidate.find("]")
+        if closing < 0:
+            raise ValueError("Invalid bracketed forwarded address")
+        address_text = candidate[1:closing]
+        suffix = candidate[closing + 1 :]
+        if suffix and (not suffix.startswith(":") or not suffix[1:].isdigit()):
+            raise ValueError("Invalid forwarded address port")
+        return ipaddress.ip_address(address_text)
+    try:
+        return ipaddress.ip_address(candidate)
+    except ValueError:
+        address_text, separator, port = candidate.rpartition(":")
+        if not separator or not port.isdigit():
+            raise
+        return ipaddress.ip_address(address_text)
+
+
+def _valid_forwarded_host(value: str) -> str:
+    host = value.strip().strip('"')
+    if (
+        not host
+        or len(host) > 255
+        or any(character in host for character in ("/", "\\", "@", "#", "?", "\r", "\n"))
+    ):
+        raise ValueError("Invalid forwarded host")
+    return host
+
+
+def _forwarded_chain(value: str, limit: int) -> tuple[list[str], str | None, str | None]:
+    elements = [element.strip() for element in value.split(",")]
+    if not elements or len(elements) > limit or any(not element for element in elements):
+        raise ValueError("Invalid Forwarded chain length")
+    addresses: list[str] = []
+    first_parameters: dict[str, str] = {}
+    for index, element in enumerate(elements):
+        parameters: dict[str, str] = {}
+        for part in element.split(";"):
+            key, separator, raw = part.strip().partition("=")
+            key = key.lower()
+            if not separator or not key or not raw or key in parameters:
+                raise ValueError("Malformed Forwarded parameter")
+            parameters[key] = raw.strip()
+        if "for" not in parameters:
+            raise ValueError("Forwarded element is missing for")
+        addresses.append(str(_address(parameters["for"])))
+        if index == 0:
+            first_parameters = parameters
+    proto = first_parameters.get("proto")
+    if proto is not None:
+        proto = proto.strip().strip('"').lower()
+        if proto not in {"http", "https"}:
+            raise ValueError("Invalid forwarded protocol")
+    host = first_parameters.get("host")
+    return addresses, proto, _valid_forwarded_host(host) if host else None
+
+
+def _x_forwarded_chain(
+    request: Request, limit: int
+) -> tuple[list[str], str | None, str | None]:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if not forwarded_for:
+        raise ValueError("X-Forwarded-For is required")
+    parts = [part.strip() for part in forwarded_for.split(",")]
+    if not parts or len(parts) > limit or any(not part for part in parts):
+        raise ValueError("Invalid X-Forwarded-For chain length")
+    addresses = [str(_address(part)) for part in parts]
+    proto = request.headers.get("x-forwarded-proto")
+    if proto is not None:
+        if "," in proto:
+            raise ValueError("X-Forwarded-Proto must contain one value")
+        proto = proto.strip().lower()
+        if proto not in {"http", "https"}:
+            raise ValueError("Invalid X-Forwarded-Proto")
+    host = request.headers.get("x-forwarded-host")
+    if host is not None:
+        if "," in host:
+            raise ValueError("X-Forwarded-Host must contain one value")
+        host = _valid_forwarded_host(host)
+    return addresses, proto, host
+
+
+def _in_networks(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...],
+) -> bool:
+    return any(address.version == network.version and address in network for network in networks)
+
+
+def request_network_context(request: Request) -> RequestNetworkContext:
+    raw_peer = request.client.host if request.client else "unknown"
+    try:
+        peer_address = _address(raw_peer)
+    except ValueError:
+        return RequestNetworkContext(raw_peer, raw_peer, request.url.scheme, None)
+    context = RequestNetworkContext(
+        str(peer_address),
+        str(peer_address),
+        request.url.scheme,
+        request.headers.get("host"),
+    )
+    if not _in_networks(peer_address, settings.trusted_proxies):
+        return context
+    present = {name for name in FORWARDED_HEADERS if request.headers.get(name) is not None}
+    if not present:
+        return context
+    try:
+        if "forwarded" in present:
+            if present - {"forwarded"}:
+                raise ValueError("Forwarded and X-Forwarded headers cannot be mixed")
+            chain, proto, host = _forwarded_chain(
+                request.headers["forwarded"], settings.forwarded_hop_limit
+            )
+        else:
+            chain, proto, host = _x_forwarded_chain(
+                request, settings.forwarded_hop_limit
+            )
+        client = chain[0]
+        for hop in reversed(chain):
+            hop_address = ipaddress.ip_address(hop)
+            if not _in_networks(hop_address, settings.trusted_proxies):
+                client = hop
+                break
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "FORWARDED_HEADERS_INVALID",
+                "message": "Trusted proxy supplied malformed forwarding headers",
+            },
+        ) from exc
+    return RequestNetworkContext(
+        str(peer_address),
+        client,
+        proto or context.scheme,
+        host or context.host,
+        forwarded=True,
+    )
+
+
+def client_is_trusted_network(context: RequestNetworkContext) -> bool:
+    try:
+        address = ipaddress.ip_address(context.client)
+    except ValueError:
+        return False
+    return _in_networks(address, settings.trusted_networks)
 
 
 def administrator(session: Session) -> AdministratorRecord | None:

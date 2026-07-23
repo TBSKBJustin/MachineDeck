@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import platform
@@ -16,12 +17,21 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 from uuid import uuid4
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    try:
+        import tomli as tomllib
+    except ModuleNotFoundError:
+        tomllib = None  # type: ignore[assignment]
 
 
 SERVICE_NAME = "machinedeck.service"
@@ -30,6 +40,8 @@ DOCTOR_HEALTHY = 0
 DOCTOR_WARNINGS = 1
 DOCTOR_ERRORS = 2
 DOCTOR_UNSUPPORTED = 3
+INSTALL_ACCESS_MODES = {"local", "lan", "tailscale"}
+SERVER_ACCESS_MODES = {"local", "lan", "proxy"}
 
 
 class DeployError(RuntimeError):
@@ -72,6 +84,18 @@ class InstallPaths:
             user_unit_dir=user_unit_dir,
             unit=user_unit_dir / SERVICE_NAME,
         )
+
+
+@dataclass(frozen=True)
+class ServerConfiguration:
+    mode: str
+    host: str
+    port: int
+    cookie_secure: str | bool
+    trusted_origins: tuple[str, ...] = ()
+    public_host_lan: str | None = None
+    trusted_proxies: tuple[str, ...] = ()
+    trusted_networks: tuple[str, ...] = ("127.0.0.0/8", "::1/128")
 
 
 class CommandRunner:
@@ -228,23 +252,313 @@ def _toml_string(value: str | Path) -> str:
     return json.dumps(str(value), ensure_ascii=False)
 
 
-def render_config(paths: InstallPaths) -> str:
-    database = f"sqlite:///{paths.state / 'machinedeck.db'}"
-    origins = [
+def _validated_origin(value: str, *, https_required: bool = False) -> str:
+    normalized = _validate_text(value.strip().rstrip("/"), "trusted Origin")
+    parsed = urllib.parse.urlsplit(normalized)
+    try:
+        _ = parsed.port
+    except ValueError as exc:
+        raise DeployError(f"Invalid trusted Origin: {value}") from exc
+    allowed_schemes = {"https"} if https_required else {"http", "https"}
+    if https_required and parsed.scheme != "https":
+        raise DeployError(f"Trusted Origin must use HTTPS: {value}")
+    if (
+        parsed.scheme not in allowed_schemes
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise DeployError(f"Invalid trusted Origin: {value}")
+    return normalized
+
+
+def _detected_lan_hosts() -> tuple[str, tuple[str, ...]]:
+    hostname = socket.gethostname().strip().lower()
+    if not hostname or any(character in hostname for character in "\r\n\x00/:"):
+        hostname = "localhost"
+    addresses: set[str] = set()
+    try:
+        candidates = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        candidates = []
+    for candidate in candidates:
+        raw = candidate[4][0]
+        try:
+            address = ipaddress.ip_address(raw)
+        except ValueError:
+            continue
+        if not address.is_loopback and not address.is_unspecified and not address.is_link_local:
+            addresses.add(str(address))
+    return hostname, tuple(sorted(addresses))
+
+
+def access_configuration(
+    access: str,
+    *,
+    trusted_origins: Sequence[str] = (),
+    trusted_proxies: Sequence[str] = (),
+    trusted_networks: Sequence[str] = (),
+    hostname: str | None = None,
+    addresses: Sequence[str] | None = None,
+) -> ServerConfiguration:
+    if access not in INSTALL_ACCESS_MODES:
+        raise DeployError(f"Unsupported access mode: {access}")
+    extra_origins = tuple(
+        _validated_origin(origin, https_required=access == "tailscale")
+        for origin in trusted_origins
+    )
+    configured_proxies = tuple(str(value).strip() for value in trusted_proxies)
+    configured_networks = tuple(str(value).strip() for value in trusted_networks)
+    default_networks = ("127.0.0.0/8", "::1/128")
+    local_origins = (
         "http://127.0.0.1:8080",
         "http://localhost:8080",
         "https://127.0.0.1:8080",
         "https://localhost:8080",
-    ]
-    rendered_origins = ", ".join(_toml_string(origin) for origin in origins)
+    )
+    if access == "local":
+        return ServerConfiguration(
+            mode="local",
+            host="127.0.0.1",
+            port=8080,
+            cookie_secure="auto",
+            trusted_origins=tuple(dict.fromkeys((*local_origins, *extra_origins))),
+            trusted_proxies=configured_proxies,
+            trusted_networks=tuple(
+                dict.fromkeys((*default_networks, *configured_networks))
+            ),
+        )
+    if access == "tailscale":
+        return ServerConfiguration(
+            mode="proxy",
+            host="127.0.0.1",
+            port=8080,
+            cookie_secure="auto",
+            trusted_origins=tuple(dict.fromkeys((*local_origins, *extra_origins))),
+            trusted_proxies=tuple(
+                dict.fromkeys(("127.0.0.1/32", "::1/128", *configured_proxies))
+            ),
+            trusted_networks=tuple(
+                dict.fromkeys((*default_networks, *configured_networks))
+            ),
+        )
+    detected_hostname, detected_addresses = _detected_lan_hosts()
+    lan_hostname = (hostname or detected_hostname).strip().lower()
+    lan_addresses = tuple(addresses) if addresses is not None else detected_addresses
+    lan_origins = [f"http://{lan_hostname}:8080"]
+    for raw_address in lan_addresses:
+        try:
+            address = ipaddress.ip_address(raw_address)
+        except ValueError as exc:
+            raise DeployError(f"Invalid detected LAN address: {raw_address}") from exc
+        host = f"[{address}]" if address.version == 6 else str(address)
+        lan_origins.append(f"http://{host}:8080")
+    return ServerConfiguration(
+        mode="lan",
+        host="0.0.0.0",
+        port=8080,
+        cookie_secure="auto",
+        trusted_origins=tuple(
+            dict.fromkeys((*local_origins, *lan_origins, *extra_origins))
+        ),
+        public_host_lan=lan_hostname,
+        trusted_proxies=configured_proxies,
+        trusted_networks=tuple(
+            dict.fromkeys((*default_networks, *configured_networks))
+        ),
+    )
+
+
+def _minimal_server_configuration(path: Path) -> ServerConfiguration:
+    section = ""
+    values: dict[tuple[str, str], str | int | bool] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip()
+            continue
+        key, separator, raw_value = line.partition("=")
+        if not separator or section not in {"server", "security", "network"}:
+            continue
+        name = key.strip()
+        if name not in {
+            "mode",
+            "host",
+            "port",
+            "cookie_secure",
+            "trusted_proxies",
+            "trusted_networks",
+        }:
+            continue
+        value = raw_value.strip()
+        try:
+            parsed: str | int | bool = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise DeployError(
+                "Python 3.10 installations require tomli to read customized TOML values"
+            ) from exc
+        values[(section, name)] = parsed
+    host = str(values.get(("server", "host"), "127.0.0.1"))
+    inferred_mode = "lan" if host in {"0.0.0.0", "::"} else "local"
+    try:
+        configuration = ServerConfiguration(
+            mode=str(values.get(("server", "mode"), inferred_mode)),
+            host=host,
+            port=int(values.get(("server", "port"), 8080)),
+            cookie_secure=values.get(("security", "cookie_secure"), True),
+            trusted_proxies=tuple(
+                str(value)
+                for value in values.get(("network", "trusted_proxies"), [])
+            ),
+            trusted_networks=tuple(
+                str(value)
+                for value in values.get(
+                    ("network", "trusted_networks"),
+                    ["127.0.0.0/8", "::1/128"],
+                )
+            ),
+        )
+    except (TypeError, ValueError) as exc:
+        raise DeployError("server.port must be an integer") from exc
+    validate_server_configuration(configuration)
+    return configuration
+
+
+def read_server_configuration(path: Path) -> ServerConfiguration:
+    try:
+        if tomllib is None:
+            return _minimal_server_configuration(path)
+        with path.open("rb") as handle:
+            data = tomllib.load(handle)
+    except (OSError, ValueError) as exc:
+        raise DeployError(f"Cannot read MachineDeck configuration: {path}: {exc}") from exc
+    server = data.get("server", {})
+    security = data.get("security", {})
+    network = data.get("network", {})
+    if (
+        not isinstance(server, dict)
+        or not isinstance(security, dict)
+        or not isinstance(network, dict)
+    ):
+        raise DeployError(
+            "MachineDeck server, security, and network configuration must be TOML tables"
+        )
+    host = str(server.get("host", "127.0.0.1")).strip()
+    inferred_mode = "lan" if host in {"0.0.0.0", "::"} else "local"
+    origins = server.get("trusted_origins", [])
+    if not isinstance(origins, list):
+        raise DeployError("server.trusted_origins must be a TOML array")
+    proxies = network.get("trusted_proxies", [])
+    networks = network.get(
+        "trusted_networks", ["127.0.0.0/8", "::1/128"]
+    )
+    if not isinstance(proxies, list) or not isinstance(networks, list):
+        raise DeployError(
+            "network.trusted_proxies and network.trusted_networks must be TOML arrays"
+        )
+    try:
+        configuration = ServerConfiguration(
+            mode=str(server.get("mode", inferred_mode)).strip().lower(),
+            host=host,
+            port=int(server.get("port", 8080)),
+            cookie_secure=security.get("cookie_secure", True),
+            trusted_origins=tuple(str(origin).rstrip("/") for origin in origins),
+            public_host_lan=server.get("public_host_lan"),
+            trusted_proxies=tuple(str(value) for value in proxies),
+            trusted_networks=tuple(str(value) for value in networks),
+        )
+    except (TypeError, ValueError) as exc:
+        raise DeployError("server.port must be an integer") from exc
+    validate_server_configuration(configuration)
+    return configuration
+
+
+def validate_server_configuration(configuration: ServerConfiguration) -> None:
+    if configuration.mode not in SERVER_ACCESS_MODES:
+        raise DeployError("server.mode must be local, lan, or proxy")
+    try:
+        address = ipaddress.ip_address(configuration.host)
+    except ValueError as exc:
+        raise DeployError("server.host must be a literal IP address") from exc
+    if configuration.mode in {"local", "proxy"} and not address.is_loopback:
+        raise DeployError(f"server.mode={configuration.mode} requires a loopback host")
+    if configuration.mode == "lan" and not address.is_unspecified:
+        raise DeployError("server.mode=lan requires host 0.0.0.0 or ::")
+    if not 1 <= configuration.port <= 65535:
+        raise DeployError("server.port must be between 1 and 65535")
+    cookie = configuration.cookie_secure
+    if not isinstance(cookie, bool) and str(cookie).lower() not in {
+        "auto",
+        "secure",
+        "insecure",
+        "true",
+        "false",
+    }:
+        raise DeployError("security.cookie_secure has an invalid value")
+    for origin in configuration.trusted_origins:
+        _validated_origin(origin)
+    for label, values in (
+        ("trusted_proxies", configuration.trusted_proxies),
+        ("trusted_networks", configuration.trusted_networks),
+    ):
+        for value in values:
+            try:
+                network = ipaddress.ip_network(value, strict=True)
+            except ValueError as exc:
+                raise DeployError(
+                    f"network.{label} must contain canonical IPv4 or IPv6 CIDRs"
+                ) from exc
+            if label == "trusted_proxies" and network.num_addresses > 65536:
+                raise DeployError(
+                    "network.trusted_proxies entries cannot contain more than 65536 addresses"
+                )
+
+
+def render_config(paths: InstallPaths, configuration: ServerConfiguration | None = None) -> str:
+    configuration = configuration or access_configuration("local")
+    validate_server_configuration(configuration)
+    database = f"sqlite:///{paths.state / 'machinedeck.db'}"
+    rendered_origins = ", ".join(
+        _toml_string(origin) for origin in configuration.trusted_origins
+    )
     rendered_roots = ", ".join(_toml_string(path) for path in (paths.home,))
     rendered_disks = ", ".join(_toml_string(path) for path in (Path("/"), paths.home))
+    rendered_proxies = ", ".join(
+        _toml_string(value) for value in configuration.trusted_proxies
+    )
+    rendered_networks = ", ".join(
+        _toml_string(value) for value in configuration.trusted_networks
+    )
+    cookie_secure = (
+        "true"
+        if configuration.cookie_secure is True
+        else "false"
+        if configuration.cookie_secure is False
+        else _toml_string(str(configuration.cookie_secure))
+    )
+    public_host = (
+        f"public_host_lan = {_toml_string(configuration.public_host_lan)}\n"
+        if configuration.public_host_lan
+        else ""
+    )
     return (
         "# MachineDeck configuration. Administrator credentials are never stored here.\n"
         "[server]\n"
-        'host = "127.0.0.1"\n'
-        "port = 8080\n"
+        f"mode = {_toml_string(configuration.mode)}\n"
+        f"host = {_toml_string(configuration.host)}\n"
+        f"port = {configuration.port}\n"
+        f"{public_host}"
         f"trusted_origins = [{rendered_origins}]\n\n"
+        "[security]\n"
+        f"cookie_secure = {cookie_secure}\n\n"
+        "[network]\n"
+        f"trusted_proxies = [{rendered_proxies}]\n"
+        f"trusted_networks = [{rendered_networks}]\n\n"
         "[state]\n"
         f"database_url = {_toml_string(database)}\n\n"
         "[paths]\n"
@@ -278,8 +592,18 @@ def _systemd_environment(name: str, value: str | Path) -> str:
     return f"Environment={_systemd_quote(f'{name}={value}')}"
 
 
-def render_unit(paths: InstallPaths, release_root: Path | None = None) -> str:
+def render_unit(
+    paths: InstallPaths,
+    release_root: Path | None = None,
+    server: ServerConfiguration | None = None,
+) -> str:
     root = release_root or paths.current
+    server = server or (
+        read_server_configuration(paths.config)
+        if paths.config.exists()
+        else access_configuration("local")
+    )
+    validate_server_configuration(server)
     python = root / "venv" / "bin" / "python"
     working_directory = root / "backend"
     return "\n".join(
@@ -292,7 +616,11 @@ def render_unit(paths: InstallPaths, release_root: Path | None = None) -> str:
             "[Service]",
             "Type=simple",
             f"WorkingDirectory={_systemd_path(working_directory)}",
-            f"ExecStart={_systemd_quote(python)} -m uvicorn app.main:app --host 127.0.0.1 --port 8080",
+            (
+                f"ExecStart={_systemd_quote(python)} -m uvicorn app.main:app "
+                f"--host {_systemd_quote(server.host)} --port {server.port} "
+                "--no-proxy-headers"
+            ),
             "Restart=on-failure",
             "RestartSec=5",
             "TimeoutStartSec=60",
@@ -446,6 +774,10 @@ def deploy(
     start: bool = True,
     enable_linger: bool = False,
     assume_yes: bool = False,
+    access_mode: str | None = None,
+    trusted_origins: Sequence[str] = (),
+    trusted_proxies: Sequence[str] = (),
+    trusted_networks: Sequence[str] = (),
 ) -> Path:
     _check_linux()
     _reject_root()
@@ -458,8 +790,18 @@ def deploy(
     if not upgrade and old_release is not None:
         print(f"MachineDeck is already installed at {old_release}")
         return old_release
-    if not _port_available() and not _service_active(runner):
-        raise DeployError("TCP port 8080 is already in use by another process")
+    server = (
+        read_server_configuration(paths.config)
+        if paths.config.exists()
+        else access_configuration(
+            access_mode or "local",
+            trusted_origins=trusted_origins,
+            trusted_proxies=trusted_proxies,
+            trusted_networks=trusted_networks,
+        )
+    )
+    if not _port_available(server.port) and not _service_active(runner):
+        raise DeployError(f"TCP port {server.port} is already in use by another process")
     runner.run(["systemctl", "--user", "show-environment"], capture=True)
 
     version = _source_version(source)
@@ -490,11 +832,15 @@ def deploy(
         )
         _atomic_write(staging / "VERSION", f"{version}\n", 0o644)
         verification_unit = staging / SERVICE_NAME
-        _atomic_write(verification_unit, render_unit(paths, staging), 0o644)
+        _atomic_write(
+            verification_unit,
+            render_unit(paths, staging, server),
+            0o644,
+        )
         runner.run(["systemd-analyze", "--user", "verify", verification_unit])
         verification_unit.unlink()
         if not paths.config.exists():
-            _atomic_write(paths.config, render_config(paths), 0o600)
+            _atomic_write(paths.config, render_config(paths, server), 0o600)
 
         if old_release is not None and _service_active(runner):
             runner.run(["systemctl", "--user", "stop", SERVICE_NAME])
@@ -517,7 +863,8 @@ def deploy(
         (staging / ".installing").unlink()
         _switch_current(paths, release)
         switched = True
-        _atomic_write(paths.unit, render_unit(paths), 0o644)
+        active_server = read_server_configuration(paths.config)
+        _atomic_write(paths.unit, render_unit(paths, server=active_server), 0o644)
         runner.run(["systemctl", "--user", "daemon-reload"])
         if enable_linger:
             if _confirmed(
@@ -527,7 +874,7 @@ def deploy(
                 runner.run(["loginctl", "enable-linger", os.environ.get("USER", "")])
         if start:
             runner.run(["systemctl", "--user", "enable", "--now", SERVICE_NAME])
-            _wait_for_health()
+            _wait_for_health(active_server.port)
         return release
     except Exception:
         if old_release is None:
@@ -608,6 +955,7 @@ class DoctorCheck:
 
 def doctor(paths: InstallPaths, runner: CommandRunner) -> tuple[int, list[DoctorCheck]]:
     checks: list[DoctorCheck] = []
+    server_configuration: ServerConfiguration | None = None
 
     def record(status: str, name: str, detail: str) -> None:
         checks.append(DoctorCheck(status, name, detail))
@@ -635,6 +983,89 @@ def doctor(paths: InstallPaths, runner: CommandRunner) -> tuple[int, list[Doctor
     if paths.config.exists() and not paths.config.is_symlink():
         mode = paths.config.stat().st_mode & 0o777
         record("PASS" if mode & 0o077 == 0 else "ERROR", "Configuration permissions", oct(mode))
+        try:
+            server_configuration = read_server_configuration(paths.config)
+            record(
+                "PASS",
+                "Network access mode",
+                (
+                    f"{server_configuration.mode} "
+                    f"({server_configuration.host}:{server_configuration.port})"
+                ),
+            )
+            cookie_value = server_configuration.cookie_secure
+            cookie_policy = (
+                str(cookie_value).lower()
+                if not isinstance(cookie_value, bool)
+                else "secure"
+                if cookie_value
+                else "insecure"
+            )
+            cookie_secure = (
+                server_configuration.mode == "proxy"
+                if cookie_policy == "auto"
+                else cookie_policy in {"secure", "true"}
+            )
+            cookie_status = (
+                "WARN"
+                if server_configuration.mode == "lan" and not cookie_secure
+                else "ERROR"
+                if server_configuration.mode == "proxy" and not cookie_secure
+                else "PASS"
+            )
+            cookie_detail = (
+                f"{cookie_policy}; resolved Secure={'true' if cookie_secure else 'false'}"
+            )
+            if cookie_status == "WARN":
+                cookie_detail += "; LAN HTTP is not encrypted"
+            record(cookie_status, "Session Cookie policy", cookie_detail)
+            urls = access_urls(server_configuration)
+            origin_status = (
+                "WARN"
+                if server_configuration.mode in {"lan", "proxy"} and not urls
+                else "PASS"
+            )
+            record(
+                origin_status,
+                "Trusted browser Origins",
+                ", ".join(urls) if urls else "no external access URL configured",
+            )
+            proxy_status = (
+                "WARN"
+                if server_configuration.mode == "proxy"
+                and not server_configuration.trusted_proxies
+                else "PASS"
+            )
+            record(
+                proxy_status,
+                "Trusted proxy CIDRs",
+                (
+                    ", ".join(server_configuration.trusted_proxies)
+                    if server_configuration.trusted_proxies
+                    else "none; forwarding headers are ignored"
+                ),
+            )
+            external_networks = [
+                value
+                for value in server_configuration.trusted_networks
+                if value not in {"127.0.0.0/8", "::1/128"}
+            ]
+            network_status = (
+                "WARN"
+                if server_configuration.mode == "lan" and not external_networks
+                else "PASS"
+            )
+            record(
+                network_status,
+                "Trusted network CIDRs",
+                (
+                    ", ".join(server_configuration.trusted_networks)
+                    if server_configuration.trusted_networks
+                    else "none; trusted networks never bypass authentication"
+                ),
+            )
+        except DeployError as exc:
+            record("ERROR", "Network configuration", str(exc))
     database = _database_path(paths)
     if database.exists() and not database.is_symlink():
         database_mode = database.stat().st_mode & 0o777
@@ -672,8 +1103,26 @@ def doctor(paths: InstallPaths, runner: CommandRunner) -> tuple[int, list[Doctor
         "Service PID",
         pid or "unavailable",
     )
+    if server_configuration is not None and paths.unit.is_file():
+        try:
+            unit_content = paths.unit.read_text(encoding="utf-8")
+            expected_host = f"--host {_systemd_quote(server_configuration.host)}"
+            expected_port = f"--port {server_configuration.port}"
+            unit_matches = expected_host in unit_content and expected_port in unit_content
+            record(
+                "PASS" if unit_matches else "ERROR",
+                "Service binding consistency",
+                (
+                    f"{server_configuration.host}:{server_configuration.port}"
+                    if unit_matches
+                    else "service unit does not match config.toml"
+                ),
+            )
+        except OSError as exc:
+            record("ERROR", "Service binding consistency", str(exc))
     try:
-        with urllib.request.urlopen("http://127.0.0.1:8080/health", timeout=2) as response:
+        health_port = server_configuration.port if server_configuration else 8080
+        with urllib.request.urlopen(f"http://127.0.0.1:{health_port}/health", timeout=2) as response:
             healthy = response.status == 200
         record("PASS" if healthy else "ERROR", "HTTP health endpoint", f"HTTP {response.status}")
     except (OSError, urllib.error.URLError) as exc:
@@ -736,6 +1185,26 @@ def _source_default() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def access_urls(configuration: ServerConfiguration) -> tuple[str, ...]:
+    if configuration.mode == "lan":
+        return tuple(
+            origin
+            for origin in configuration.trusted_origins
+            if origin.startswith("http://")
+            and "127.0.0.1" not in origin
+            and "localhost" not in origin
+        )
+    if configuration.mode == "proxy":
+        return tuple(
+            origin
+            for origin in configuration.trusted_origins
+            if origin.startswith("https://")
+            and "127.0.0.1" not in origin
+            and "localhost" not in origin
+        )
+    return (f"http://127.0.0.1:{configuration.port}",)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="machinedeck-deploy")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -744,6 +1213,29 @@ def _parser() -> argparse.ArgumentParser:
     install_parser.add_argument("--enable-linger", action="store_true")
     install_parser.add_argument("--no-start", action="store_true")
     install_parser.add_argument("--yes", action="store_true")
+    install_parser.add_argument(
+        "--access",
+        choices=sorted(INSTALL_ACCESS_MODES),
+        default="local",
+    )
+    install_parser.add_argument(
+        "--trusted-origin",
+        action="append",
+        default=[],
+        help="Additional exact browser Origin; HTTPS is required for tailscale access",
+    )
+    install_parser.add_argument(
+        "--trusted-proxy",
+        action="append",
+        default=[],
+        help="Canonical proxy CIDR allowed to supply forwarding headers",
+    )
+    install_parser.add_argument(
+        "--trusted-network",
+        action="append",
+        default=[],
+        help="Canonical LAN CIDR for diagnostics and policy; does not bypass login",
+    )
     upgrade_parser = subparsers.add_parser("upgrade")
     upgrade_parser.add_argument("--from-local", type=Path, default=_source_default())
     upgrade_parser.add_argument("--no-start", action="store_true")
@@ -771,9 +1263,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 start=not arguments.no_start,
                 enable_linger=arguments.enable_linger,
                 assume_yes=arguments.yes,
+                access_mode=arguments.access,
+                trusted_origins=arguments.trusted_origin,
+                trusted_proxies=arguments.trusted_proxy,
+                trusted_networks=arguments.trusted_network,
             )
             print(f"MachineDeck installed: {release}")
-            print("Local URL: http://127.0.0.1:8080")
+            installed_server = read_server_configuration(paths.config)
+            urls = access_urls(installed_server)
+            if urls:
+                for url in urls:
+                    print(f"Access URL: {url}")
+            elif arguments.access == "tailscale":
+                print(
+                    "Tailscale proxy mode installed. Add its exact HTTPS Origin "
+                    "with --trusted-origin or in config.toml before remote login."
+                )
             return 0
         if arguments.command == "upgrade":
             release = deploy(

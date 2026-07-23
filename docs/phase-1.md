@@ -299,7 +299,7 @@ fixture unit, container, and network were removed successfully afterward.
 cd backend
 python3 -m pytest
 alembic upgrade head
-python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8080
+python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8080 --no-proxy-headers
 ```
 
 Open `http://127.0.0.1:8080/` for first-run administrator setup and the live

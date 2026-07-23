@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Generator
 from dataclasses import replace
+from datetime import timedelta
+import ipaddress
 from pathlib import Path
 from unittest.mock import patch
 
 import httpx
 import pytest
+from fastapi import Response
 from pydantic import ValidationError
 from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -23,6 +26,7 @@ from app.database.models import (
 from app.database.session import get_session
 from app.main import app
 from app.schemas.auth import Credentials
+from app.security.auth import set_session_cookie, utc_now
 
 
 PASSWORD = "correct horse battery staple"
@@ -85,7 +89,7 @@ async def test_setup_creates_one_argon2id_admin_and_server_side_session(
     assert setup.json()["username"] == "admin"
     assert "password" not in setup.text
     cookie = setup.headers["set-cookie"].lower()
-    assert "httponly" in cookie and "secure" in cookie and "samesite=strict" in cookie
+    assert "httponly" in cookie and "secure" not in cookie and "samesite=strict" in cookie
     assert status_response.json() == {"setup_required": False, "authenticated": True}
     assert protected.status_code == 200
     assert duplicate.status_code == 409
@@ -100,6 +104,22 @@ async def test_setup_creates_one_argon2id_admin_and_server_side_session(
             saved_session.token_digest,
             saved_session.csrf_digest,
         }
+
+
+def test_proxy_mode_cookie_policy_sets_secure_attribute() -> None:
+    response = Response()
+    proxy_settings = replace(
+        settings,
+        access_mode="proxy",
+        auth_cookie_secure_policy="auto",
+        auth_cookie_secure=True,
+    )
+    with patch("app.security.auth.settings", proxy_settings):
+        set_session_cookie(response, "session-token", utc_now() + timedelta(hours=1))
+    cookie = response.headers["set-cookie"].lower()
+    assert "httponly" in cookie
+    assert "secure" in cookie
+    assert "samesite=strict" in cookie
 
 
 @pytest.mark.asyncio
@@ -232,7 +252,7 @@ async def test_setup_rejects_remote_clients_and_untrusted_origins(
     assert remote.json()["detail"]["code"] == "LOCAL_SETUP_REQUIRED"
     assert "127.0.0.1" in remote.json()["detail"]["message"]
     assert hostile.status_code == 403
-    assert hostile.json()["detail"]["code"] == "ORIGIN_NOT_ALLOWED"
+    assert hostile.json()["detail"]["code"] == "LOCAL_SETUP_REQUIRED"
 
 
 @pytest.mark.asyncio
@@ -248,6 +268,49 @@ async def test_remote_setup_reports_local_requirement_before_origin_configuratio
             json=credentials(),
             headers={"origin": "http://100.100.100.100:8080"},
         )
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "LOCAL_SETUP_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_proxy_peer_cannot_make_remote_origin_look_like_local_setup(
+    session_factory: sessionmaker[Session],
+) -> None:
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 12345))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="https://machine.example.ts.net"
+    ) as client:
+        response = await client.post(
+            "/api/v1/auth/setup",
+            json=credentials(),
+            headers={"origin": "https://machine.example.ts.net"},
+        )
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "LOCAL_SETUP_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_trusted_proxy_remote_client_cannot_bypass_local_setup(
+    session_factory: sessionmaker[Session],
+) -> None:
+    proxy_settings = replace(
+        settings,
+        trusted_proxies=(ipaddress.ip_network("127.0.0.1/32"),),
+    )
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 12345))
+    with patch("app.security.auth.settings", proxy_settings):
+        async with httpx.AsyncClient(
+            transport=transport, base_url="https://127.0.0.1:8080"
+        ) as client:
+            response = await client.post(
+                "/api/v1/auth/setup",
+                json=credentials(),
+                headers={
+                    "origin": ORIGIN,
+                    "x-forwarded-for": "192.168.1.50",
+                    "x-forwarded-proto": "https",
+                },
+            )
     assert response.status_code == 403
     assert response.json()["detail"]["code"] == "LOCAL_SETUP_REQUIRED"
 

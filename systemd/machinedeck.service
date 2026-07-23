@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/.local/share/machinedeck/current/backend
-ExecStart=%h/.local/share/machinedeck/current/venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080
+ExecStart=%h/.local/share/machinedeck/current/venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080 --no-proxy-headers
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=60

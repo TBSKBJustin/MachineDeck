@@ -45,10 +45,12 @@ class FakeWebSocket:
         self.closed = (code, reason)
 
 
-def test_loopback_origins_allow_any_local_port_but_not_lookalike_hosts() -> None:
-    assert origin_is_trusted("http://127.0.0.1:39427")
-    assert origin_is_trusted("https://localhost:8443")
-    assert origin_is_trusted("http://[::1]:9000")
+def test_origins_require_exact_configured_scheme_host_and_port() -> None:
+    assert origin_is_trusted("http://127.0.0.1:8080")
+    assert origin_is_trusted("https://localhost:8080")
+    assert not origin_is_trusted("http://127.0.0.1:39427")
+    assert not origin_is_trusted("https://localhost:8443")
+    assert not origin_is_trusted("http://[::1]:9000")
     assert not origin_is_trusted("http://localhost.attacker.example:8080")
     assert not origin_is_trusted("javascript://localhost")
     with pytest.raises(HTTPException):

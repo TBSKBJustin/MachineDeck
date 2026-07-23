@@ -20,8 +20,10 @@ from app.security.auth import (
     create_administrator,
     create_auth_session,
     is_loopback,
+    origin_is_local,
     rate_limited,
     record_login_failure,
+    request_network_context,
     rotate_csrf,
     require_http_auth,
     require_trusted_origin,
@@ -65,7 +67,13 @@ async def setup(
     response: Response,
     session: DatabaseSession,
 ) -> AuthSessionResponse:
-    if not is_loopback(request.client.host if request.client else None):
+    origin = request.headers.get("origin")
+    network = request_network_context(request)
+    if (
+        not is_loopback(network.peer)
+        or not is_loopback(network.client)
+        or (origin is not None and not origin_is_local(origin))
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={
@@ -76,7 +84,7 @@ async def setup(
                 ),
             },
         )
-    require_trusted_origin(request.headers.get("origin"))
+    require_trusted_origin(origin)
     admin = create_administrator(session, credentials.username, credentials.password)
     saved, token, csrf_token = create_auth_session(session, admin)
     set_session_cookie(response, token, saved.expires_at)
@@ -91,7 +99,7 @@ async def login(
     session: DatabaseSession,
 ) -> AuthSessionResponse:
     require_trusted_origin(request.headers.get("origin"))
-    remote = request.client.host if request.client else "unknown"
+    remote = request_network_context(request).client
     if rate_limited(session, remote):
         session.add(
             AuditEventRecord(

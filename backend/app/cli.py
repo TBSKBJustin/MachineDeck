@@ -17,7 +17,12 @@ def main() -> None:
     from app.config import settings
     import uvicorn
 
-    uvicorn.run("app.main:app", host=settings.bind_host, port=settings.bind_port)
+    uvicorn.run(
+        "app.main:app",
+        host=settings.bind_host,
+        port=settings.bind_port,
+        proxy_headers=False,
+    )
 
 
 if __name__ == "__main__":

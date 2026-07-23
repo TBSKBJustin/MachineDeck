@@ -73,6 +73,74 @@ The generated `config.toml` and SQLite database have mode `0600`. Configuration
 contains no administrator password and is never overwritten by a repeated
 installation. Environment variables continue to take precedence over TOML values.
 
+### Access modes
+
+The installer requires an explicit access-mode selection only when the
+local-only default is not appropriate:
+
+```bash
+./scripts/install.sh --access local
+./scripts/install.sh \
+  --access lan \
+  --trusted-network 192.168.1.0/24
+./scripts/install.sh \
+  --access tailscale \
+  --trusted-origin https://machine-name.tailnet-name.ts.net
+```
+
+The modes map to installed server configuration as follows:
+
+| Installer choice | Server mode | Binding | Automatic Cookie behavior |
+| --- | --- | --- | --- |
+| `local` | `local` | `127.0.0.1:8080` | `Secure=false` |
+| `lan` | `lan` | `0.0.0.0:8080` | `Secure=false` |
+| `tailscale` | `proxy` | `127.0.0.1:8080` | `Secure=true` |
+
+All modes retain `HttpOnly` and `SameSite=Strict`, CSRF validation, explicit
+Origin validation, login throttling, session expiration, WebSocket
+authentication, and audit records. Cookie security and public URLs come only
+from configuration; MachineDeck does not infer them from request `Host` or
+forwarded headers. Uvicorn's implicit proxy-header transformation is disabled.
+MachineDeck parses forwarding metadata itself only when the raw TCP peer belongs
+to a configured trusted proxy CIDR.
+
+LAN mode adds the detected hostname and non-loopback host addresses to the
+Origin allowlist and prints the resulting access URLs. Detection can vary with
+host DNS configuration, so review `[server].trusted_origins` after installation.
+LAN HTTP is not encrypted. Restrict it to the intended private subnet, for
+example:
+
+```bash
+sudo ufw allow from 192.168.1.0/24 to any port 8080 proto tcp
+```
+
+Replace that example subnet with the actual home network. MachineDeck does not
+configure UFW, router port forwarding, or UPnP automatically.
+
+Initial administrator setup remains local-only in every mode. Complete setup
+through `http://127.0.0.1:8080` on the host before signing in from another
+device. A reverse proxy's loopback TCP peer does not make an external browser
+Origin eligible for first-run setup.
+
+Trust boundaries are configured separately:
+
+```toml
+[network]
+trusted_proxies = ["127.0.0.1/32", "::1/128"]
+trusted_networks = [
+  "127.0.0.0/8",
+  "::1/128",
+  "192.168.1.0/24",
+]
+```
+
+Trusted Origins authorize browser CSRF and WebSocket Origin checks. Trusted
+proxies authorize forwarding metadata only when the direct TCP peer is inside
+the configured CIDR. Trusted networks support policy and diagnostics but never
+bypass login, CSRF, or WebSocket authentication. Forwarded chains are bounded,
+must contain literal IP addresses, and cannot mix `Forwarded` with
+`X-Forwarded-*`.
+
 ## Upgrade
 
 ```bash
@@ -157,29 +225,47 @@ volumes, or Compose projects.
 
 ## Tailscale HTTPS
 
-MachineDeck binds to loopback and always uses a Secure session Cookie. For
-private tailnet access, proxy it through Tailscale Serve and add the exact HTTPS
-origin to `[server].trusted_origins` in `config.toml`:
+For a new private-tailnet installation, select proxy mode and provide the exact
+HTTPS Origin:
+
+```bash
+./scripts/install.sh \
+  --access tailscale \
+  --trusted-origin https://machine-name.tailnet-name.ts.net
+```
+
+For an existing installation, keep MachineDeck bound to loopback and update
+`config.toml` explicitly:
 
 ```toml
 [server]
+mode = "proxy"
+host = "127.0.0.1"
 trusted_origins = [
   "http://127.0.0.1:8080",
   "http://localhost:8080",
   "https://machine-name.tailnet-name.ts.net"
 ]
+
+[security]
+cookie_secure = "auto"
+
+[network]
+trusted_proxies = ["127.0.0.1/32", "::1/128"]
+trusted_networks = ["127.0.0.0/8", "::1/128"]
 ```
 
-Then restart MachineDeck and configure the private proxy:
+Run a local upgrade to regenerate the service unit from configuration, then
+configure the private proxy:
 
 ```bash
-systemctl --user restart machinedeck.service
+./scripts/upgrade.sh --from-local .
 sudo tailscale serve --bg 8080
 ```
 
 Use the HTTPS `*.ts.net` URL. Do not expose port 8080 on `0.0.0.0` or use a raw
 Tailscale IP over HTTP, because that bypasses the proxy boundary and cannot
-reliably carry the Secure Cookie.
+provide the configured HTTPS transport boundary.
 
 ## Failure and ownership guarantees
 
