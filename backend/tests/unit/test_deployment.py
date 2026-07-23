@@ -177,6 +177,121 @@ def test_read_server_configuration_supports_legacy_and_new_files(paths: object) 
     assert loaded == lan
 
 
+def lan_server(
+    *,
+    port: int = 8080,
+    networks: tuple[str, ...] = ("127.0.0.0/8", "::1/128", "192.168.1.0/24"),
+) -> object:
+    return deploy_module.ServerConfiguration(
+        mode="lan",
+        host="0.0.0.0",
+        port=port,
+        cookie_secure="auto",
+        trusted_networks=networks,
+    )
+
+
+def test_firewall_assessment_warns_when_ufw_is_inactive() -> None:
+    assessment = deploy_module.assess_ufw_status(
+        "Status: inactive\n", lan_server()
+    )
+    assert assessment.status == "WARN"
+    assert "inactive" in assessment.detail
+
+
+def test_firewall_assessment_warns_for_ipv4_or_ipv6_anywhere_rule() -> None:
+    output = """\
+Status: active
+
+To                         Action      From
+--                         ------      ----
+8080/tcp                   ALLOW       192.168.1.0/24
+8080/tcp (v6)              ALLOW       Anywhere (v6)
+"""
+    assessment = deploy_module.assess_ufw_status(output, lan_server())
+    assert assessment.status == "WARN"
+    assert "Anywhere" in assessment.detail
+    assert "sudo ufw allow from 192.168.1.0/24" in assessment.detail
+
+
+def test_firewall_assessment_passes_scoped_rules_for_every_trusted_network() -> None:
+    configuration = lan_server(
+        networks=(
+            "127.0.0.0/8",
+            "::1/128",
+            "192.168.1.0/24",
+            "10.20.0.0/16",
+        )
+    )
+    output = """\
+Status: active
+8080/tcp                   ALLOW       192.168.1.0/24
+8080/tcp                   ALLOW IN    10.20.0.0/16
+"""
+    assessment = deploy_module.assess_ufw_status(output, configuration)
+    assert assessment.status == "PASS"
+    assert "not proof" in assessment.detail
+
+
+def test_firewall_assessment_uses_custom_port_and_reports_missing_networks() -> None:
+    configuration = lan_server(
+        port=9090,
+        networks=(
+            "127.0.0.0/8",
+            "::1/128",
+            "192.168.1.0/24",
+            "10.20.0.0/16",
+        ),
+    )
+    output = """\
+Status: active
+9090/tcp                   ALLOW       192.168.1.0/24
+8080/tcp                   ALLOW       Anywhere
+"""
+    assessment = deploy_module.assess_ufw_status(output, configuration)
+    assert assessment.status == "WARN"
+    assert "10.20.0.0/16" in assessment.detail
+    assert "port 9090" in assessment.detail
+
+
+def test_firewall_doctor_is_not_applicable_outside_lan_and_classifies_failures() -> None:
+    class FirewallRunner:
+        def __init__(self, returncode: int, output: str = "", error: str = "") -> None:
+            self.returncode = returncode
+            self.output = output
+            self.error = error
+            self.calls = 0
+
+        def run(self, *_: object, **__: object) -> subprocess.CompletedProcess[str]:
+            self.calls += 1
+            return subprocess.CompletedProcess(
+                ["ufw", "status"],
+                self.returncode,
+                self.output,
+                self.error,
+            )
+
+    local = deploy_module.ServerConfiguration(
+        mode="local",
+        host="127.0.0.1",
+        port=8080,
+        cookie_secure="auto",
+    )
+    runner = FirewallRunner(0, "Status: active")
+    skipped = deploy_module.firewall_doctor_check(local, runner)
+    assert skipped.status == "INFO"
+    assert runner.calls == 0
+
+    missing = deploy_module.firewall_doctor_check(lan_server(), FirewallRunner(127))
+    denied = deploy_module.firewall_doctor_check(
+        lan_server(), FirewallRunner(1, error="permission denied")
+    )
+    assert missing.status == "INFO"
+    assert "not installed" in missing.detail
+    assert denied.status == "UNKNOWN"
+    assert "permission denied" in denied.detail
+
+
 def test_unit_paths_are_escaped_without_turning_quotes_into_path_characters(tmp_path: Path) -> None:
     paths = deploy_module.InstallPaths.discover(
         {

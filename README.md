@@ -846,16 +846,17 @@ machinedeck/
 - [x] Show detected local, LAN, and Tailnet access URLs after installation
 - [x] Extend `machinedeck doctor` with binding, Origin, and Cookie checks
 - [x] Extend `machinedeck doctor` with trusted-proxy and trusted-network checks
-- [ ] Extend `machinedeck doctor` with firewall-policy checks
+- [x] Extend `machinedeck doctor` with read-only firewall-policy checks
 - [ ] Add a Settings UI for reviewing and changing the access mode safely
 - [ ] Add `local`, `lan`, `tailnet`, and `custom` application endpoint exposure
   policies
 - [ ] Warn when an application's observed bind address does not match its
   configured exposure
-- [ ] Provide subnet-scoped UFW guidance without configuring port forwarding or
+- [x] Provide subnet-scoped UFW guidance without configuring port forwarding or
   UPnP automatically
-- [ ] Add integration and host-acceptance tests for LAN HTTP, proxy HTTPS,
-  session Cookies, CSRF, Origin validation, and WebSocket authentication
+- [x] Pass real-host LAN Dashboard reachability and login acceptance
+- [ ] Complete adversarial LAN Origin/WebSocket checks and the local and proxy
+  HTTPS host-acceptance matrix
 
 ### Phase 2 — Automation and Reliability
 

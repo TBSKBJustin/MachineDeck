@@ -175,7 +175,15 @@ From an installed virtual environment:
 Doctor checks the release pointer, version, configuration permissions, database
 and Alembic revision, systemd user bus, service and PID, HTTP health, Docker
 Engine and Compose, journal access, NVML, managed unit symlinks, linger, and disk
-space.
+space. In LAN mode it also runs a read-only UFW assessment. It distinguishes an
+uninstalled or inactive UFW, unreadable policy, missing port rules,
+subnet-scoped rules, and IPv4 or IPv6 `Anywhere` allowances. It understands the
+configured MachineDeck port and multiple trusted networks.
+
+Doctor never invokes `sudo`, enables UFW, or changes a firewall rule. If the
+current user cannot read UFW policy, the result is `UNKNOWN` and the overall
+doctor result contains warnings. A scoped rule produces `PASS` only for the
+detected condition; it is not presented as proof of complete firewall safety.
 
 Exit codes are:
 

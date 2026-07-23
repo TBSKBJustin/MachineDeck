@@ -42,6 +42,7 @@ DOCTOR_ERRORS = 2
 DOCTOR_UNSUPPORTED = 3
 INSTALL_ACCESS_MODES = {"local", "lan", "tailscale"}
 SERVER_ACCESS_MODES = {"local", "lan", "proxy"}
+IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 
 class DeployError(RuntimeError):
@@ -953,6 +954,175 @@ class DoctorCheck:
     detail: str
 
 
+@dataclass(frozen=True)
+class FirewallAssessment:
+    status: str
+    detail: str
+
+
+def _ufw_target_includes_port(target: str, port: int) -> bool:
+    normalized = target.lower().replace("(v6)", "").strip()
+    port_text = normalized.partition("/")[0]
+    if ":" in port_text:
+        start_text, _, end_text = port_text.partition(":")
+        try:
+            return int(start_text) <= port <= int(end_text)
+        except ValueError:
+            return False
+    try:
+        return int(port_text) == port
+    except ValueError:
+        return False
+
+
+def _ufw_allow_sources(output: str, port: int) -> tuple[bool, list[IPNetwork]]:
+    anywhere = False
+    networks: list[IPNetwork] = []
+    rule_pattern = re.compile(
+        r"^\s*(?:\[\s*\d+\]\s*)?"
+        r"(?P<target>\S+(?:\s+\(v6\))?)\s+"
+        r"ALLOW(?:\s+IN)?\s+"
+        r"(?P<source>.+?)\s*$",
+        re.IGNORECASE,
+    )
+    for line in output.splitlines():
+        match = rule_pattern.match(line)
+        if match is None or not _ufw_target_includes_port(match.group("target"), port):
+            continue
+        source = match.group("source").strip()
+        if source.lower().startswith("anywhere"):
+            anywhere = True
+            continue
+        source_text = source.split()[0]
+        try:
+            network = ipaddress.ip_network(source_text, strict=False)
+        except ValueError:
+            continue
+        if network not in networks:
+            networks.append(network)
+    return anywhere, networks
+
+
+def _external_trusted_networks(
+    configuration: ServerConfiguration,
+) -> list[IPNetwork]:
+    networks: list[IPNetwork] = []
+    for value in configuration.trusted_networks:
+        network = ipaddress.ip_network(value, strict=True)
+        if network.is_loopback:
+            continue
+        networks.append(network)
+    return networks
+
+
+def _ufw_suggestion(configuration: ServerConfiguration) -> str | None:
+    networks = _external_trusted_networks(configuration)
+    if not networks:
+        return None
+    return (
+        f"sudo ufw allow from {networks[0]} to any port "
+        f"{configuration.port} proto tcp"
+    )
+
+
+def assess_ufw_status(
+    output: str,
+    configuration: ServerConfiguration,
+) -> FirewallAssessment:
+    normalized = output.strip()
+    status_match = re.search(
+        r"(?mi)^\s*Status:\s*(?P<status>active|inactive)\s*$", normalized
+    )
+    if status_match is None:
+        return FirewallAssessment(
+            "UNKNOWN",
+            "UFW output could not be interpreted; firewall safety was not determined",
+        )
+    if status_match.group("status").lower() == "inactive":
+        return FirewallAssessment(
+            "WARN",
+            "UFW is inactive while LAN mode listens on all IPv4 interfaces",
+        )
+    anywhere, allowed_networks = _ufw_allow_sources(
+        normalized, configuration.port
+    )
+    suggestion = _ufw_suggestion(configuration)
+    if anywhere:
+        detail = (
+            f"UFW permits TCP port {configuration.port} from Anywhere; "
+            "the rule may expose every connected interface"
+        )
+        if suggestion:
+            detail += f"\nSuggested subnet-scoped rule: {suggestion}"
+        return FirewallAssessment("WARN", detail)
+    expected = _external_trusted_networks(configuration)
+    if not expected:
+        return FirewallAssessment(
+            "WARN",
+            "No non-loopback trusted network is configured, so a scoped UFW rule cannot be evaluated",
+        )
+    missing = [
+        network
+        for network in expected
+        if not any(
+            network.version == allowed.version and network.subnet_of(allowed)
+            for allowed in allowed_networks
+        )
+    ]
+    if missing:
+        detail = (
+            f"No complete subnet-scoped UFW allowance was detected for TCP port "
+            f"{configuration.port}: {', '.join(str(network) for network in missing)}"
+        )
+        if suggestion:
+            detail += f"\nSuggested command: {suggestion}"
+        return FirewallAssessment("WARN", detail)
+    return FirewallAssessment(
+        "PASS",
+        (
+            f"UFW is active with subnet-scoped TCP port {configuration.port} "
+            f"allowance for {', '.join(str(network) for network in expected)}; "
+            "this is a diagnostic, not proof of complete firewall safety"
+        ),
+    )
+
+
+def firewall_doctor_check(
+    configuration: ServerConfiguration,
+    runner: CommandRunner,
+) -> FirewallAssessment:
+    if configuration.mode != "lan":
+        return FirewallAssessment(
+            "INFO",
+            f"Not applicable to loopback-bound {configuration.mode} mode",
+        )
+    environment = os.environ.copy()
+    environment.update({"LC_ALL": "C", "LANG": "C"})
+    result = runner.run(
+        ["ufw", "status"],
+        check=False,
+        capture=True,
+        env=environment,
+    )
+    combined = "\n".join(
+        part.strip() for part in (result.stdout, result.stderr) if part.strip()
+    )
+    if result.returncode == 127:
+        return FirewallAssessment(
+            "INFO",
+            "UFW is not installed; firewall policy was not determined",
+        )
+    if result.returncode != 0:
+        return FirewallAssessment(
+            "UNKNOWN",
+            (
+                "UFW policy could not be read without elevation"
+                + (f": {combined}" if combined else "")
+            ),
+        )
+    return assess_ufw_status(combined, configuration)
+
+
 def doctor(paths: InstallPaths, runner: CommandRunner) -> tuple[int, list[DoctorCheck]]:
     checks: list[DoctorCheck] = []
     server_configuration: ServerConfiguration | None = None
@@ -1064,6 +1234,8 @@ def doctor(paths: InstallPaths, runner: CommandRunner) -> tuple[int, list[Doctor
                     else "none; trusted networks never bypass authentication"
                 ),
             )
+            firewall = firewall_doctor_check(server_configuration, runner)
+            record(firewall.status, "Firewall policy", firewall.detail)
         except DeployError as exc:
             record("ERROR", "Network configuration", str(exc))
     database = _database_path(paths)
@@ -1176,7 +1348,7 @@ def doctor(paths: InstallPaths, runner: CommandRunner) -> tuple[int, list[Doctor
         return DOCTOR_UNSUPPORTED, checks
     if any(check.status == "ERROR" for check in checks):
         return DOCTOR_ERRORS, checks
-    if any(check.status == "WARN" for check in checks):
+    if any(check.status in {"WARN", "UNKNOWN"} for check in checks):
         return DOCTOR_WARNINGS, checks
     return DOCTOR_HEALTHY, checks
 

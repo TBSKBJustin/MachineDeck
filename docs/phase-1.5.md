@@ -36,6 +36,10 @@ concern and is never enabled through router port forwarding or UPnP.
 - nearest-untrusted-hop client resolution for login throttling and setup safety;
 - trusted-network classification that never bypasses administrator
   authentication;
+- read-only, LAN-only UFW diagnostics for unavailable, inactive, unreadable,
+  missing, subnet-scoped, and IPv4/IPv6 Anywhere rules;
+- custom-port and multiple-trusted-network firewall evaluation with
+  configuration-derived subnet guidance;
 - first-run setup protection that requires both a loopback peer and a local
   browser Origin, preventing an external reverse-proxy request from appearing
   local merely because the proxy connects from loopback.
@@ -113,6 +117,18 @@ network CIDRs describe local network policy and diagnostics; they do not grant
 authentication or suppress CSRF checks. Forwarding metadata never changes the
 configured Cookie policy or public URL.
 
+## Host acceptance
+
+LAN reachability passed on 2026-07-23. The installed configuration was changed
+to `mode = "lan"` with a `0.0.0.0` bind, deployed through the normal local
+upgrade workflow, and the authenticated Dashboard was successfully accessed
+from a different device on the same physical network.
+
+This acceptance confirms the real host binding, upgrade, LAN routing, HTTP
+Cookie, and browser login path. It does not by itself complete the remaining
+adversarial Origin/WebSocket checks or the local and proxy/Tailscale acceptance
+matrix.
+
 ## Remaining work
 
 - optional trusted-network use for setup-token policy, notifications, and risk
@@ -121,5 +137,5 @@ configured Cookie policy or public URL.
 - application endpoint exposure policies (`local`, `lan`, `tailnet`, and
   `custom`);
 - observed bind/exposure mismatch warnings;
-- doctor checks for firewall policy;
-- complete LAN HTTP and proxy HTTPS host-acceptance testing.
+- complete adversarial LAN Origin/WebSocket checks and the local and proxy HTTPS
+  host-acceptance matrix.
