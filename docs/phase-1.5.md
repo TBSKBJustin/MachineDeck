@@ -117,6 +117,13 @@ network CIDRs describe local network policy and diagnostics; they do not grant
 authentication or suppress CSRF checks. Forwarding metadata never changes the
 configured Cookie policy or public URL.
 
+`trusted_proxies` may remain empty when MachineDeck does not need the original
+client IP, protocol, or host supplied by the proxy. Tailscale Serve HTTPS still
+works because the Cookie policy and trusted public Origin come from explicit
+configuration. Ignoring forwarding metadata reduces the proxy-header attack
+surface; Doctor retains an informational warning so the operational tradeoff is
+visible.
+
 ## Host acceptance
 
 LAN reachability passed on 2026-07-23. The installed configuration was changed
@@ -204,9 +211,11 @@ curl --fail --silent --show-error http://127.0.0.1:8080/health
 ```
 
 Doctor must report `proxy` mode, `127.0.0.1:8080`, a Secure session Cookie
-policy, the exact HTTPS Origin, configured loopback trusted proxies, and
-consistent unit binding. The socket table must contain only the loopback
-listener for port 8080.
+policy, the exact HTTPS Origin, and consistent unit binding. Configured trusted
+proxy CIDRs are required only when forwarded client metadata is intentionally
+consumed. An empty list and its Doctor warning are acceptable when forwarding
+headers are deliberately ignored. The socket table must contain only the
+loopback listener for port 8080.
 
 Then run the same validator from another Tailnet device using the exact HTTPS
 Origin:
@@ -223,6 +232,27 @@ sent back successfully to an authenticated API, uses certificate-verified
 HTTPS through `httpx`, and upgrades the Dashboard test to `wss://`. Its unknown
 HTTP and WebSocket test Origins use HTTPS as well.
 
+Proxy/Tailscale HTTPS host acceptance passed on 2026-07-23. The live test
+confirmed:
+
+- Doctor reported `proxy` mode with a `127.0.0.1:8080` backend bind and
+  `Secure=true`;
+- the backend socket listener remained loopback-only;
+- Tailscale Serve exposed a tailnet-only HTTPS endpoint that proxied to the
+  localhost backend;
+- TLS certificate verification and browser login through the configured HTTPS
+  Origin succeeded;
+- the session Cookie contained `Secure`, `HttpOnly`, and `SameSite=Strict` and
+  completed an authenticated HTTPS round trip;
+- an authenticated POST from an unknown HTTPS Origin was rejected;
+- an unknown WebSocket Origin was rejected during the handshake with HTTP 403;
+- the configured `wss://` Origin received `dashboard_snapshot`;
+- forged forwarding headers did not bypass authentication.
+
+The accepted host intentionally left trusted proxy CIDRs empty. MachineDeck did
+not depend on forwarded metadata for Cookie security, public-Origin selection,
+authentication, or routing, so the corresponding Doctor warning was expected.
+
 The current host-acceptance matrix is:
 
 ```text
@@ -233,15 +263,17 @@ LAN Origin enforcement:              PASS
 LAN WebSocket Origin enforcement:    PASS
 Forwarded-header spoof resistance:   PASS
 Local-mode isolation:                PASS
-Proxy/Tailscale HTTPS acceptance:    PENDING
+Proxy/Tailscale HTTPS acceptance:    PASS
 ```
 
-## Remaining work
+The `local`, `lan`, and `proxy` network foundations and their security
+boundaries have now completed real-host acceptance.
+
+## Remaining product work
 
 - optional trusted-network use for setup-token policy, notifications, and risk
   reporting without authentication bypass;
 - safe access-mode changes through the Settings UI;
 - application endpoint exposure policies (`local`, `lan`, `tailnet`, and
   `custom`);
-- observed bind/exposure mismatch warnings;
-- complete proxy/Tailscale HTTPS host acceptance.
+- observed bind/exposure mismatch warnings.

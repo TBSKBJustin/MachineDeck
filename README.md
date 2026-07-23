@@ -859,7 +859,7 @@ machinedeck/
 - [x] Pass adversarial LAN Origin, CSRF, forwarded-header, and WebSocket
   acceptance
 - [x] Pass local-mode host acceptance
-- [ ] Pass proxy/Tailscale HTTPS host acceptance
+- [x] Pass proxy/Tailscale HTTPS host acceptance
 
 ### Phase 2 — Automation and Reliability
 
