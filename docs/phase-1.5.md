@@ -129,6 +129,50 @@ Cookie, and browser login path. It does not by itself complete the remaining
 adversarial Origin/WebSocket checks or the local and proxy/Tailscale acceptance
 matrix.
 
+Firewall Doctor host acceptance also passed on 2026-07-23. LAN mode, the
+`0.0.0.0:8080` binding, Origin configuration, trusted networks, ignored
+untrusted proxy headers, service health, and the read-only UFW behavior all
+matched the design.
+
+The following non-PASS results were expected and are retained as risk
+information rather than hidden:
+
+- the LAN HTTP session Cookie is not Secure;
+- firewall policy is `UNKNOWN` when an unprivileged account cannot read UFW,
+  because Doctor does not invoke `sudo`;
+- systemd linger is disabled when the operator deliberately elects not to
+  enable it.
+
+The accepted configuration also included a direct Tailnet HTTP Origin such as
+`http://<tailscale-ip>:8080` and the corresponding trusted `/32` host network.
+The Tailnet encrypts transport between peers, but the browser still treats this
+URL as HTTP. A future Tailscale Serve HTTPS deployment should use `proxy` mode
+with its exact `https://...ts.net` Origin and remove the direct Tailnet HTTP
+Origin.
+
+### Adversarial LAN validation
+
+Run the repeatable security acceptance from a different device on the trusted
+LAN for the strongest direct-peer evidence:
+
+```bash
+python3 -m venv .validation-venv
+source .validation-venv/bin/activate
+python3 -m pip install -e './backend[test]'
+python3 scripts/validate-phase1.5-lan-security.py \
+  --base-url http://192.168.1.50:8080 \
+  --username justin
+```
+
+The environment setup is only needed when that checkout does not already have
+the test dependencies. Use the exact configured trusted Origin. The script
+prompts for the password so it does not appear in shell history. It verifies
+that a trusted network does not bypass authentication or CSRF, forged
+`Forwarded` and `X-Forwarded-*` headers do not bypass authentication, unknown
+HTTP Origins are rejected, and an unknown WebSocket Origin cannot read a
+Dashboard event. It creates and then revokes one administrator session but does
+not register, start, stop, or modify any application.
+
 ## Remaining work
 
 - optional trusted-network use for setup-token policy, notifications, and risk

@@ -847,6 +847,7 @@ machinedeck/
 - [x] Extend `machinedeck doctor` with binding, Origin, and Cookie checks
 - [x] Extend `machinedeck doctor` with trusted-proxy and trusted-network checks
 - [x] Extend `machinedeck doctor` with read-only firewall-policy checks
+- [x] Pass Firewall Doctor real-host acceptance
 - [ ] Add a Settings UI for reviewing and changing the access mode safely
 - [ ] Add `local`, `lan`, `tailnet`, and `custom` application endpoint exposure
   policies
