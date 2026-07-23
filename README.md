@@ -695,6 +695,32 @@ machinedeck/
 - [x] Configuration validation
 - [x] systemd installation
 
+### Phase 1.5 — Network Access
+
+**Product principle:** LAN-first, local-first, and never public-by-default.
+
+- [ ] Add explicit `local`, `lan`, and `proxy` server access modes
+- [ ] Keep `local` as the safe default and bind it to `127.0.0.1`
+- [ ] Support native home-LAN access through an explicit `0.0.0.0` binding
+- [ ] Support Tailnet HTTPS and trusted reverse-proxy deployments
+- [ ] Add configured `auto`, secure, and non-secure session Cookie policies
+- [ ] Never infer Cookie security or public URLs from untrusted forwarded headers
+- [ ] Add trusted proxy, trusted Origin, and trusted network configuration
+- [ ] Add `--access local|lan|tailscale` installation choices
+- [ ] Preserve the selected access mode during upgrades and rollback
+- [ ] Show detected local, LAN, and Tailnet access URLs after installation
+- [ ] Extend `machinedeck doctor` with binding, Origin, Cookie, proxy, and
+  firewall-policy checks
+- [ ] Add a Settings UI for reviewing and changing the access mode safely
+- [ ] Add `local`, `lan`, `tailnet`, and `custom` application endpoint exposure
+  policies
+- [ ] Warn when an application's observed bind address does not match its
+  configured exposure
+- [ ] Provide subnet-scoped UFW guidance without configuring port forwarding or
+  UPnP automatically
+- [ ] Add integration and host-acceptance tests for LAN HTTP, proxy HTTPS,
+  session Cookies, CSRF, Origin validation, and WebSocket authentication
+
 ### Phase 2 — Automation and Reliability
 
 - [x] Automatic port discovery
