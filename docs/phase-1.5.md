@@ -148,7 +148,7 @@ URL as HTTP. A future Tailscale Serve HTTPS deployment should use `proxy` mode
 with its exact `https://...ts.net` Origin and remove the direct Tailnet HTTP
 Origin.
 
-### Adversarial LAN validation
+### Adversarial network validation
 
 Run the repeatable security acceptance from a different device on the trusted
 LAN for the strongest direct-peer evidence:
@@ -194,6 +194,34 @@ of evidence:
 - a different device connecting to the host's LAN address received
   `Connection refused`, confirming that the request never reached the
   MachineDeck application layer.
+
+For proxy/Tailscale HTTPS acceptance, first confirm on the MachineDeck host:
+
+```bash
+~/.local/share/machinedeck/current/venv/bin/machinedeck doctor
+ss -ltnp '( sport = :8080 )'
+curl --fail --silent --show-error http://127.0.0.1:8080/health
+```
+
+Doctor must report `proxy` mode, `127.0.0.1:8080`, a Secure session Cookie
+policy, the exact HTTPS Origin, configured loopback trusted proxies, and
+consistent unit binding. The socket table must contain only the loopback
+listener for port 8080.
+
+Then run the same validator from another Tailnet device using the exact HTTPS
+Origin:
+
+```bash
+python3 scripts/validate-phase1.5-lan-security.py \
+  --base-url https://machine-name.tailnet-name.ts.net \
+  --username justin
+```
+
+For an HTTPS Origin the validator additionally requires the session Cookie to
+contain `Secure`, `HttpOnly`, and `SameSite=Strict`, proves that the Cookie is
+sent back successfully to an authenticated API, uses certificate-verified
+HTTPS through `httpx`, and upgrades the Dashboard test to `wss://`. Its unknown
+HTTP and WebSocket test Origins use HTTPS as well.
 
 The current host-acceptance matrix is:
 

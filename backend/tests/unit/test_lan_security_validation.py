@@ -52,3 +52,53 @@ def test_parse_origin_accepts_exact_http_origins(value: str, expected: str) -> N
 def test_parse_origin_rejects_non_origin_urls(value: str) -> None:
     with pytest.raises(argparse.ArgumentTypeError):
         validation_module.parse_origin(value)
+
+
+@pytest.mark.parametrize(
+    ("header", "secure_expected", "expected", "detail"),
+    [
+        (
+            "machinedeck_session=secret; HttpOnly; Path=/; SameSite=strict",
+            False,
+            True,
+            "Secure=false; HttpOnly=true; SameSite=Strict",
+        ),
+        (
+            (
+                "machinedeck_session=secret; HttpOnly; Path=/; "
+                "SameSite=strict; Secure"
+            ),
+            True,
+            True,
+            "Secure=true; HttpOnly=true; SameSite=Strict",
+        ),
+        (
+            "machinedeck_session=secret; Path=/; SameSite=lax; Secure",
+            True,
+            False,
+            "Secure=true; HttpOnly=false; SameSite=lax",
+        ),
+    ],
+)
+def test_session_cookie_policy(
+    header: str,
+    secure_expected: bool,
+    expected: bool,
+    detail: str,
+) -> None:
+    response = validation_module.httpx.Response(
+        200,
+        headers={"Set-Cookie": header},
+    )
+    assert validation_module.session_cookie_policy(
+        response,
+        secure_expected=secure_expected,
+    ) == (expected, detail)
+
+
+def test_session_cookie_policy_rejects_missing_cookie() -> None:
+    response = validation_module.httpx.Response(200)
+    assert validation_module.session_cookie_policy(
+        response,
+        secure_expected=True,
+    ) == (False, "session Cookie header missing")

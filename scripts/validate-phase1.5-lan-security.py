@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Adversarial host acceptance for an installed MachineDeck LAN endpoint."""
+"""Adversarial host acceptance for an installed MachineDeck network endpoint."""
 
 from __future__ import annotations
 
@@ -12,9 +12,6 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 import websockets
 from websockets.exceptions import ConnectionClosed
-
-
-ATTACKER_ORIGIN = "http://untrusted-origin.invalid"
 
 
 def parse_origin(value: str) -> str:
@@ -42,6 +39,44 @@ def detail_code(response: httpx.Response) -> str | None:
     except (ValueError, AttributeError):
         return None
     return detail.get("code") if isinstance(detail, dict) else None
+
+
+def session_cookie_policy(
+    response: httpx.Response,
+    *,
+    secure_expected: bool,
+) -> tuple[bool, str]:
+    prefix = "machinedeck_session="
+    header = next(
+        (
+            value
+            for value in response.headers.get_list("set-cookie")
+            if value.lower().startswith(prefix)
+        ),
+        None,
+    )
+    if header is None:
+        return False, "session Cookie header missing"
+    parts = [part.strip() for part in header.split(";")]
+    flags = {part.lower() for part in parts[1:] if "=" not in part}
+    attributes = {
+        key.strip().lower(): value.strip().lower()
+        for part in parts[1:]
+        if "=" in part
+        for key, value in [part.split("=", 1)]
+    }
+    secure = "secure" in flags
+    httponly = "httponly" in flags
+    strict = attributes.get("samesite") == "strict"
+    passed = secure == secure_expected and httponly and strict
+    return (
+        passed,
+        (
+            f"Secure={'true' if secure else 'false'}; "
+            f"HttpOnly={'true' if httponly else 'false'}; "
+            f"SameSite={'Strict' if strict else attributes.get('samesite', 'missing')}"
+        ),
+    )
 
 
 async def rejected_websocket(
@@ -93,8 +128,9 @@ async def accepted_websocket(
 
 
 async def validate(base_url: str, username: str, password: str) -> int:
-    scheme = "wss" if base_url.startswith("https://") else "ws"
     parsed = urlsplit(base_url)
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    attacker_origin = f"{parsed.scheme}://untrusted-origin.invalid"
     websocket_url = urlunsplit(
         (scheme, parsed.netloc, "/ws/v1/dashboard", "", "")
     )
@@ -144,7 +180,7 @@ async def validate(base_url: str, username: str, password: str) -> int:
         unknown_login_origin = await client.post(
             "/api/v1/auth/login",
             headers={
-                "Origin": ATTACKER_ORIGIN,
+                "Origin": attacker_origin,
                 "X-Forwarded-For": "127.0.0.1",
             },
             json={"username": username, "password": "not-used-by-origin-check"},
@@ -171,6 +207,14 @@ async def validate(base_url: str, username: str, password: str) -> int:
         if login.status_code != 200:
             print(json.dumps(results, indent=2))
             return 1
+        policy_passed, policy_detail = session_cookie_policy(
+            login,
+            secure_expected=parsed.scheme == "https",
+        )
+        results["session_cookie_policy"] = {
+            "passed": policy_passed,
+            "detail": policy_detail,
+        }
         csrf = login.json()["csrf_token"]
         session_token = client.cookies.get("machinedeck_session")
         if not session_token:
@@ -180,10 +224,17 @@ async def validate(base_url: str, username: str, password: str) -> int:
             return 1
         cookie = f"machinedeck_session={session_token}"
 
+        authenticated = await client.get("/api/v1/applications")
+        results["session_cookie_sent_and_authenticated"] = {
+            "passed": authenticated.status_code == 200,
+            "status": authenticated.status_code,
+            "code": detail_code(authenticated),
+        }
+
         unknown_post_origin = await client.post(
             "/api/v1/applications/validate",
             headers={
-                "Origin": ATTACKER_ORIGIN,
+                "Origin": attacker_origin,
                 "X-CSRF-Token": csrf,
             },
             json={},
@@ -213,7 +264,7 @@ async def validate(base_url: str, username: str, password: str) -> int:
 
         rejected, rejected_detail = await rejected_websocket(
             websocket_url,
-            origin=ATTACKER_ORIGIN,
+            origin=attacker_origin,
             cookie=cookie,
         )
         results["unknown_websocket_origin_rejected"] = {
@@ -247,15 +298,18 @@ async def validate(base_url: str, username: str, password: str) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Validate an installed LAN endpoint. Run from another LAN device "
-            "for the strongest direct-peer acceptance evidence."
+            "Validate an installed LAN or HTTPS proxy endpoint. Run from a "
+            "different client device for the strongest acceptance evidence."
         )
     )
     parser.add_argument(
         "--base-url",
         required=True,
         type=parse_origin,
-        help="Exact trusted MachineDeck Origin, for example http://192.168.1.50:8080",
+        help=(
+            "Exact trusted MachineDeck Origin, for example "
+            "http://192.168.1.50:8080 or https://machine.example.ts.net"
+        ),
     )
     parser.add_argument("--username", required=True)
     arguments = parser.parse_args()
