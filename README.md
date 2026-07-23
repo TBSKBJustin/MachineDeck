@@ -856,8 +856,10 @@ machinedeck/
 - [x] Provide subnet-scoped UFW guidance without configuring port forwarding or
   UPnP automatically
 - [x] Pass real-host LAN Dashboard reachability and login acceptance
-- [ ] Complete adversarial LAN Origin/WebSocket checks and the local and proxy
-  HTTPS host-acceptance matrix
+- [x] Pass adversarial LAN Origin, CSRF, forwarded-header, and WebSocket
+  acceptance
+- [x] Pass local-mode host acceptance
+- [ ] Pass proxy/Tailscale HTTPS host acceptance
 
 ### Phase 2 — Automation and Reliability
 

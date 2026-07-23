@@ -125,9 +125,7 @@ upgrade workflow, and the authenticated Dashboard was successfully accessed
 from a different device on the same physical network.
 
 This acceptance confirms the real host binding, upgrade, LAN routing, HTTP
-Cookie, and browser login path. It does not by itself complete the remaining
-adversarial Origin/WebSocket checks or the local and proxy/Tailscale acceptance
-matrix.
+Cookie, and browser login path.
 
 Firewall Doctor host acceptance also passed on 2026-07-23. LAN mode, the
 `0.0.0.0:8080` binding, Origin configuration, trusted networks, ignored
@@ -173,6 +171,43 @@ HTTP Origins are rejected, and an unknown WebSocket Origin cannot read a
 Dashboard event. It creates and then revokes one administrator session but does
 not register, start, stop, or modify any application.
 
+Adversarial LAN host acceptance passed on 2026-07-23. The live test confirmed:
+
+- the health endpoint returned HTTP 200;
+- a trusted network did not bypass authentication or CSRF;
+- forged `Forwarded` and `X-Forwarded-*` headers did not bypass authentication;
+- an unknown login Origin returned HTTP 403 with `ORIGIN_NOT_ALLOWED`;
+- login from the configured Origin succeeded;
+- an authenticated POST from an unknown Origin was still rejected;
+- an unknown WebSocket Origin was rejected during the handshake with HTTP 403,
+  before any Dashboard event was exposed;
+- a WebSocket from the configured Origin received `dashboard_snapshot`;
+- the temporary test session was revoked successfully with HTTP 204.
+
+Local-mode host acceptance passed on 2026-07-23 with three independent layers
+of evidence:
+
+- Doctor reported `local` mode, a `127.0.0.1:8080` bind, and consistent binding
+  configuration;
+- the host socket table showed a listener only on `127.0.0.1:8080`, with no
+  listener on `0.0.0.0` or a LAN address;
+- a different device connecting to the host's LAN address received
+  `Connection refused`, confirming that the request never reached the
+  MachineDeck application layer.
+
+The current host-acceptance matrix is:
+
+```text
+LAN reachability and login:          PASS
+LAN adversarial authentication:      PASS
+LAN CSRF enforcement:                PASS
+LAN Origin enforcement:              PASS
+LAN WebSocket Origin enforcement:    PASS
+Forwarded-header spoof resistance:   PASS
+Local-mode isolation:                PASS
+Proxy/Tailscale HTTPS acceptance:    PENDING
+```
+
 ## Remaining work
 
 - optional trusted-network use for setup-token policy, notifications, and risk
@@ -181,5 +216,4 @@ not register, start, stop, or modify any application.
 - application endpoint exposure policies (`local`, `lan`, `tailnet`, and
   `custom`);
 - observed bind/exposure mismatch warnings;
-- complete adversarial LAN Origin/WebSocket checks and the local and proxy HTTPS
-  host-acceptance matrix.
+- complete proxy/Tailscale HTTPS host acceptance.
